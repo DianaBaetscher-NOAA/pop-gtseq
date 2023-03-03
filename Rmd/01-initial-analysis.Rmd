@@ -1,0 +1,348 @@
+---
+title: "01-initial-analysis"
+output: html_notebook
+---
+
+2 March 2023
+
+
+Looking at the first batch of genotype data for POP.
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(stringr)
+library(lubridate)
+
+
+source("../R/microhaplot-genos-funcs.R")
+```
+
+```{r}
+genos_long <- call_genos_from_haplotRDS("../data/rds_files/POP_gtseq3.rds")
+
+
+```
+
+```{r}
+genos_long %>%
+  group_by(locus) %>%
+  filter(!is.na(allele.balance)) %>%
+  summarise(loc_depth = sum(depth)) %>%
+  arrange(desc(loc_depth))
+
+```
+Only 102 loci are in the VCF file.
+
+
+## Locus evaluation
+
+How many loci and how many alleles?
+
+```{r}
+# alleles
+genos_long %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique()
+
+# loci
+genos_long %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique() %>%
+  group_by(locus) %>%
+  tally() %>%
+  arrange(desc(n))
+
+  
+```
+
+242 alleles across 102 loci with between 1-6 alleles per locus.
+
+Missing data:
+
+```{r}
+# missing data across loci
+locs_to_toss <- genos_long %>%
+  group_by(locus) %>%
+  mutate(missingness = ifelse(is.na(allele), 1, 0)) %>%
+  summarise(sum(missingness)) %>% # 102 loci x2 = total
+  filter(`sum(missingness)`>102) %>% # more than 50% missing data
+  select(locus) # drop those loci for now and see how the assignment goes
+
+# just the keepers
+genos_locs_filtered <- genos_long %>%
+  anti_join(., locs_to_toss)
+
+```
+
+
+4 loci with > 50% missing data.
+Drop those.
+
+
+```{r}
+# summary of remaining loci
+genos_locs_filtered %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique()
+
+genos_locs_filtered %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique() %>%
+  group_by(locus) %>%
+  tally() %>%
+  arrange(desc(n))
+
+```
+99 loci with 1-6 alleles per locus.
+
+
+```{r}
+# QC check
+genos_long %>%
+  group_by(id, locus) %>% # there should be no more than 2 alleles for a given indiv/locus
+  tally() %>%
+  filter(n > 2)
+
+```
+
+
+## Missing data in individuals
+
+Total number of loci = 99 Total number of gene copies = 198
+
+Total number of samples = 95
+
+```{r}
+# 25% missing data
+198*0.25
+
+inds_to_toss <- genos_locs_filtered %>%
+  group_by(id) %>%
+  mutate(missingness = ifelse(is.na(allele), 1, 0)) %>%
+  summarise(sum(missingness)) %>%
+  arrange(desc(`sum(missingness)`)) %>%
+  filter(`sum(missingness)` > 50) # remove samples with >25% missing data
+
+# just the keepers
+genos_locs_ind_filtered <- genos_locs_filtered %>%
+  anti_join(., inds_to_toss)
+
+
+```
+
+How many indivs retained?
+
+
+```{r}
+genos_locs_ind_filtered %>%
+  select(id) %>%
+  unique()
+```
+
+Take a look at that dataset
+
+```{r}
+genos_locs_ind_filtered  %>%
+  #unite(gtseq_run, id, col = "sample", remove = F) %>%
+  ggplot(aes(x = reorder(locus, depth), y = reorder(id, depth), fill = log10(depth))) +
+  geom_tile()
+
+ggsave("pdf_outputs/POPheatmap.pdf")
+```
+
+That's a strange pattern - with NAs for some individuals in some of the higher read depth loci. Variation in the primer sites across POP groups?
+
+Quick look at a PCA before getting the expected population information for POP groups/ABLG numbers.
+
+
+## Taking data through to a PCA
+
+
+If that's the case, just take a peak at a PCA for these filtered genotypes to evaluate whether there's any obvious structure among these bycatch samples.
+
+The format I need for the PCA is strata, indiv, markers, genotype (allele idx)
+
+
+
+```{r}
+# first make integers of the alleles
+alle_idxs <- genos_locs_ind_filtered %>% 
+  dplyr::select(id, locus, gene_copy, allele) %>%
+  group_by(locus) %>%
+  mutate(alleidx = as.integer(factor(allele, levels = unique(allele)))) %>%
+  ungroup() %>%
+  arrange(id, locus, alleidx) # rubias can handle NA's, so no need to change them to 0's
+```
+
+
+
+Make the df match the requirements for tidy_genomic_data
+```{r}
+long_df <- alle_idxs %>%
+  select(-allele, -gene_copy) %>%
+  mutate(group = "POP") %>%
+  #left_join(., spp_indiv) %>%
+  #select(species, everything()) %>%
+  rename(INDIVIDUALS = id, STRATA = group, MARKERS = locus, GT = alleidx)
+
+```
+
+Genotypes should be coded with 3 integers for each alleles. 6 integers in total for the genotypes. e.g. 001002 or 111333 (for heterozygote individual). 6 integers WITH separator: e.g. 001/002 or 111/333 (for heterozygote individual). The separator can be any of these: "/", ":", "_", "-", ".", and will be removed.
+
+
+Add population information from metadata:
+
+```{r}
+# metadata for reference samples
+meta1 <- read_csv("../data/pop_335_population_assignment.csv")
+
+samplelist <- read_csv("../data/samplesheets/20230131POPtest4_BFALtest4_KGLibs.csv", skip = 19)
+
+metadata <- samplelist %>%
+  inner_join(., meta1, by = c("Sample_ID" = "ABLG")) %>%
+  mutate(population = pop_assign) %>%
+  select(Sample_ID, s_id, population, pop)
+
+metadata %>% head()
+```
+
+
+```{r}
+tmp <- long_df %>%
+  left_join(., metadata, by = c("INDIVIDUALS" = "s_id"))
+
+
+long_df_strata <- tmp %>%
+  mutate(STRATA = population) %>%
+  select(STRATA, everything()) %>%
+  select(-population)
+
+```
+
+
+```{r}
+library("DescTools")
+
+# create 3 digit integers from the genotypes
+long_df_strata$GT3 <- Format(long_df_strata$GT, ldigits = 3, digits = 0)
+
+head(long_df_strata)
+
+# fix NAs
+long_df0s <- long_df_strata %>%
+  mutate(GT3 = ifelse(is.na(GT3), "000", GT3))
+
+# long_df0s %>%
+#   filter(STRATA != "bycatch")
+```
+
+
+Now combine the GT3 column per indiv/marker:
+
+```{r}
+# make the genos characters and then try pasting them as strings
+long_df0s$GT3 <- as.character(long_df0s$GT3)
+
+long_df3digit <- long_df0s %>%
+  group_by(INDIVIDUALS, MARKERS) %>% 
+  arrange(GT3, .by_group = TRUE) %>% 
+  summarise(GENOTYPE = toString(GT3))
+  
+# paste strings together
+long_df3digit$GENOTYPE <- gsub(", ","",long_df3digit$GENOTYPE)
+
+
+# add back on species identity as strata
+df_for_conversion <- long_df0s %>% 
+  select(-GT, -GT3) %>%
+  left_join(., long_df3digit) %>%
+  unique() %>%
+  rename(GT = GENOTYPE) %>%
+  mutate(GT = ifelse(GT == "000000", NA, GT))
+
+df_for_conversion$STRATA <- as.factor(df_for_conversion$STRATA)
+
+# check on NAs here
+df_for_conversion %>%
+  filter(str_detect(INDIVIDUALS, "s"))
+
+# how many loci in the df for the PCA?
+df_for_conversion %>%
+  select(MARKERS) %>%
+  unique()
+
+```
+
+
+
+
+
+```{r convert-df-to-genind}
+library(radiator)
+# use the radiator package for this conversion
+genind_df <- write_genind(df_for_conversion)
+```
+
+
+Now that the data is a genind object, go ahead and run the PCA.
+
+Make PCA
+```{r dataset-pca}
+library(adegenet)
+# Allele presence absence data are extracted and NAs replaced using tab:
+datasetX <- tab(genind_df, NA.method="mean") # double check that is this the appropriate method.
+
+# make PCA
+dataset_pca1 <- dudi.pca(datasetX, center = TRUE, scannf = FALSE, scale=FALSE, nf = 1000)
+
+# colors
+mycol <- colorRampPalette(c("darkgreen", "deepskyblue", "orange", "brown", "magenta", "cyan", "darkblue", "midnightblue", "blue", "dodgerblue", "darkcyan", "darkslateblue", "slateblue", "steelblue4", "skyblue", "paleturquoise4", "brown", "royalblue", "purple4", "orange", "darkorange", "darkgoldenrod", "chocolate", "tan4", "saddlebrown", "sienna", "navajowhite4", "darkgray", "black", "pink"))(55)
+
+# plot with factor labels
+pdf("pdf_outputs/POPgtseq_test3_pca.pdf", width = 10, height = 10)
+s.class(dataset_pca1$li, fac=pop(genind_df), wt = rep(1, length(pop(genind_df))), clabel = .8, grid = FALSE, cellipse = 2,
+        xax=1, yax=2, col=transp(mycol,.8),
+        axesel=FALSE, cstar=0, cpoint=1)
+dev.off()
+
+```
+I think the PCA is very sensitive to missing data because NA is coded as 000, which would make the genotypes more similar?
+
+
+Just look at the group B samples:
+
+```{r}
+# group B
+b_grp <- df_for_conversion %>%
+  filter(str_detect(STRATA, "B"))
+
+
+b_genind <- write_genind(b_grp)
+```
+
+Make PCA
+```{r dataset-pca-grpB}
+library(adegenet)
+# Allele presence absence data are extracted and NAs replaced using tab:
+datasetB <- tab(b_genind, NA.method="mean") # double check that is this the appropriate method.
+
+# make PCA
+dataset_pcaB <- dudi.pca(datasetB, center = TRUE, scannf = FALSE, scale=FALSE, nf = 1000)
+
+# colors
+mycol <- colorRampPalette(c("darkgreen", "deepskyblue", "orange", "brown", "magenta", "cyan", "darkblue", "midnightblue", "blue", "dodgerblue", "darkcyan", "darkslateblue", "slateblue", "steelblue4", "skyblue", "paleturquoise4", "brown", "royalblue", "purple4", "orange", "darkorange", "darkgoldenrod", "chocolate", "tan4", "saddlebrown", "sienna", "navajowhite4", "darkgray", "black", "pink"))(55)
+
+# plot with factor labels
+pdf("pdf_outputs/POPgtseq_grpB_pca.pdf", width = 10, height = 10)
+s.class(dataset_pcaB$li, fac=pop(b_genind), wt = rep(1, length(pop(b_genind))), clabel = .8, grid = FALSE, cellipse = 2,
+        xax=1, yax=2, col=transp(mycol,.8),
+        axesel=FALSE, cstar=0, cpoint=1)
+dev.off()
+
+```
+*Note to self - I need to wrap up the PCA data prep into a function.
