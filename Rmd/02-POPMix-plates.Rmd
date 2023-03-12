@@ -1,0 +1,393 @@
+---
+title: "02-POPMix-plates"
+author: "Diana Baetscher"
+date: "2023-03-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Data from 8 March 2023.
+POP mixed plate genotyped with POP gtseq panel combined (merged) with POP gtseq3 data originally processed in `01-initial-analysis.Rmd`.
+
+
+Using the rds file output from microhaplot:
+1. read in rds files
+2. apply read depth filters
+3. apply allele balance filter
+
+
+
+```{r load-libs-and-funcs}
+library(tidyverse)
+library(readxl)
+library(stringr)
+library(lubridate)
+
+
+source("../R/microhaplot-genos-funcs.R")
+source("../R/pca-funcs.R")
+```
+
+```{r read-in-genos}
+#### Call genos from the microhaplot rds files ####
+
+# this next step uses a little data frame that has the names and GTSeq run numbers
+# I got that file like this:
+# dsb:rds_files dianabaetscher$ pwd
+# /Users/dianabaetscher/Desktop/NOAA_grad/git-repos/rockfish-species-id/new_baseline_data/feather_files
+# dsb:feather_files dianabaetscher$ ls -l | awk 'BEGIN {print "gtseq_run", "file"} NR >1 && !/posinfo/ {num = $NF; gsub(/gtseq/, "", num); gsub(/[._].*$/, "", num);  print num, $NF}' > ../rds-file-list.txt 
+
+
+# get the names of the files
+fdf <- read.table("../data/rds-file-list.txt", stringsAsFactors = FALSE, header = TRUE) %>%
+  tbl_df()
+dir <- "../data/rds_files/"
+
+
+# cycle over them, read them and add the gtseq_run column on each.
+# at the end, bind them together.
+genos_long <- lapply(1:nrow(fdf), function(i) {
+  message("Working on ", fdf$file[i])
+  call_genos_from_haplotRDS(path = file.path(dir, fdf$file[i])) %>%
+    mutate(gtseq_run = fdf$gtseq_run[i]) %>%
+    select(gtseq_run, everything())
+}) %>%
+  bind_rows()
+
+# we go ahead and save it in data/processed, with xz compression
+saveRDS(genos_long, file = "../data/processed/called_genos.rds", compress = "xz")
+
+
+#### In the end, let us get a data frame that includes genotypes for all the individuals  ####
+# and which explicitly has NAs in places where data are missing, and also 
+# has the NMFS_DNA_ID on there
+genos_long_explicit_NAs <- genos_long %>%
+  select(gtseq_run, id) %>%
+  unique() %>%
+  unite(col = gid, sep = "_", gtseq_run, id) %>%
+  select(gid) %>%
+  unlist() %>%
+  unname() %>%
+  expand.grid(gid = ., locus = unique(genos_long$locus), gene_copy = 1:2, stringsAsFactors = FALSE) %>%
+  tbl_df() %>% 
+  separate(gid, into = c("gtseq_run", "id"), convert = TRUE) %>%
+  left_join(., genos_long) %>%
+  arrange(gtseq_run, id, locus, gene_copy)
+
+# and then save that
+saveRDS(genos_long_explicit_NAs, file = "../data/processed/called_genos_na_explicit.rds", compress = "xz")
+  
+
+```
+
+```{r}
+genos_long_explicit_NAs %>%
+  group_by(locus) %>%
+  filter(!is.na(allele.balance)) %>%
+  summarise(loc_depth = sum(depth)) %>%
+  arrange(desc(loc_depth))
+
+```
+
+## Locus evaluation
+
+How many loci and how many alleles?
+
+```{r}
+# alleles
+genos_long %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique()
+
+# loci
+genos_long %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique() %>%
+  group_by(locus) %>%
+  tally() %>%
+  arrange(desc(n))
+
+  
+```
+
+
+437 alleles across 140 loci with between 1-10 alleles per locus.
+
+Missing data:
+
+how many indiv?
+```{r}
+genos_long %>%
+  select(gtseq_run, id) %>%
+  unique
+```
+286
+
+```{r}
+# missing data across loci
+locs_to_toss <- genos_long %>%
+  group_by(locus) %>%
+  mutate(missingness = ifelse(is.na(allele), 1, 0)) %>%
+  summarise(sum(missingness)) %>% # 140 loci x2 x192 indiv = total
+  filter(`sum(missingness)`>286) %>% # more than 50% missing data
+  select(locus) # drop those loci for now and see how the assignment goes
+
+# just the keepers
+genos_locs_filtered <- genos_long %>%
+  anti_join(., locs_to_toss)
+
+```
+
+
+
+
+```{r}
+# summary of remaining loci
+genos_locs_filtered %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique()
+
+genos_locs_filtered %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique() %>%
+  group_by(locus) %>%
+  tally() %>%
+  arrange(desc(n))
+
+```
+
+```{r}
+# QC check
+genos_long %>%
+  group_by(id, locus) %>% # there should be no more than 2 alleles for a given indiv/locus
+  tally() %>%
+  filter(n > 2)
+
+```
+
+## Missing data in individuals
+
+Total number of loci = 133 Total number of gene copies = 266
+
+Total number of samples = 286
+
+
+```{r}
+# 25% missing data
+266*0.25
+
+inds_to_toss <- genos_locs_filtered %>%
+  group_by(id) %>%
+  mutate(missingness = ifelse(is.na(allele), 1, 0)) %>%
+  summarise(sum(missingness)) %>%
+  arrange(desc(`sum(missingness)`)) %>%
+  filter(`sum(missingness)` > 67) # remove samples with >25% missing data
+
+# just the keepers
+genos_locs_ind_filtered <- genos_locs_filtered %>%
+  anti_join(., inds_to_toss)
+
+
+```
+
+How many indivs retained?
+
+
+```{r}
+genos_locs_ind_filtered %>%
+  select(gtseq_run, id) %>%
+  unique()
+
+```
+
+Take a look at that dataset
+
+```{r}
+genos_locs_ind_filtered  %>%
+  unite(gtseq_run, id, col = "sample", remove = F) %>%
+  ggplot(aes(x = reorder(locus, depth), y = reorder(sample, depth), fill = log10(depth))) +
+  geom_tile()
+
+ggsave("pdf_outputs/POPheatmap_POPmix.pdf")
+```
+
+That's a strange pattern - with NAs for some individuals in some of the higher read depth loci. Variation in the primer sites across POP groups?
+
+Quick look at a PCA before getting the expected population information for POP groups/ABLG numbers.
+
+
+## Taking data through to a PCA
+
+
+If that's the case, just take a peak at a PCA for these filtered genotypes to evaluate whether there's any obvious structure among these bycatch samples.
+
+The format I need for the PCA is strata, indiv, markers, genotype (allele idx)
+
+
+
+```{r}
+# first make integers of the alleles
+alle_idxs <- genos_locs_ind_filtered %>% 
+  unite(gtseq_run, id, col = "sample", remove = F) %>%
+  dplyr::select(sample, locus, gene_copy, allele) %>%
+  group_by(locus) %>%
+  mutate(alleidx = as.integer(factor(allele, levels = unique(allele)))) %>%
+  ungroup() %>%
+  arrange(sample, locus, alleidx) # rubias can handle NA's, so no need to change them to 0's
+```
+
+
+
+Make the df match the requirements for tidy_genomic_data
+```{r}
+long_df <- alle_idxs %>%
+  select(-allele, -gene_copy) %>%
+  mutate(group = "POP") %>%
+  #left_join(., spp_indiv) %>%
+  #select(species, everything()) %>%
+  rename(INDIVIDUALS = sample, STRATA = group, MARKERS = locus, GT = alleidx)
+
+```
+
+
+
+
+Read in some metadata to take a closer look at those samples/assignments.
+
+```{r}
+POPmix_samplesheet <- read_csv("../data/samplesheets/20230308_POPMix_SebastesLarvae.csv", skip = 19)
+
+meta_spp <- read_xlsx("../../rockfish-species-id/data_AFSC/POP_northerns_duskies_to_gtseq.xlsx")
+meta_spp$ABLG <- as.character(meta_spp$ABLG)
+
+# join those to get the species
+meta_for_gtseqMix <- POPmix_samplesheet %>%
+  filter(Sample_Project == "POPMix") %>%
+       left_join(., meta_spp, by = c("Sample_ID" = "ABLG")) %>%
+  select(Sample_ID, SpeciesName) %>%
+  mutate(id = row_number()) %>%
+  mutate(s = "POPMix_s") %>%
+  unite(col = "s_num", s, id, sep = "") %>%
+  rename(grp = SpeciesName)
+
+meta_for_gtseqMix
+```
+
+```{r}
+# read in metadata for POP gtseq3 run with group designations
+meta1 <- read_csv("../data/pop_335_population_assignment.csv")
+
+samplelist <- read_csv("../data/samplesheets/20230131POPtest4_BFALtest4_KGLibs.csv", skip = 19)
+
+metadata <- samplelist %>%
+  inner_join(., meta1, by = c("Sample_ID" = "ABLG")) %>%
+  mutate(grp = pop_assign) %>%
+  select(grp, Sample_ID, s_id) %>%
+  mutate(new_id = "POP_") %>%
+  unite(col = "s_num", new_id, s_id, sep = "") %>%
+  select(Sample_ID, grp, s_num)
+
+all_meta <- metadata %>% 
+  bind_rows(., meta_for_gtseqMix)
+```
+
+
+
+
+
+```{r}
+tmp <- long_df %>%
+  left_join(., all_meta, by = c("INDIVIDUALS" = "s_num"))
+
+long_df_w_strata <- tmp %>%
+  mutate(STRATA = grp) %>%
+  select(STRATA, everything()) %>%
+  select(-grp, -Sample_ID)
+
+```
+
+
+
+```{r call-func-for-pca}
+convert_to_genind_pca(long_df_w_strata, "POPmix_POPgtseq3_comboPCA")
+
+```
+
+
+
+
+
+## Duskies
+
+
+```{r}
+# just the duskies
+duskies <- long_df_w_strata %>%
+  filter(!STRATA %in% c("Sebastes polyspinis", "Sebastes alutus"))
+
+# genind conversion and pca plotting
+convert_to_genind_pca(duskies, "duskiesPCA")
+
+```
+
+## just the POP groups
+
+
+```{r}
+# just the POP
+pop_groups <- long_df_w_strata %>%
+  filter(STRATA %in% c("Sebastes alutus", "A", "B", "C", "D", "B1", "B2", "B3", "B4"))
+
+# genind conversion and pca plotting
+convert_to_genind_pca(pop_groups, "POPgroups_PCA")
+
+
+
+```
+
+### Notes
+
+
+A few notes about this process:
+
+Remember when merging VCF files that the sample numbers (s1, s100) cannot be identical across gtseq runs. This requires renaming the sam files and remaking the bam files for the VCF.
+
+Merge VCF files on Sedna:
+
+/home/dbaetscher/workdir/POP/gtseq/POP_gtseq3_filtered.vcf
+/home/dbaetscher/workdir/POP/gtseq/POPMix_gtseq_filtered.vcf
+
+Using some helpful tips from ECA: https://eriqande.github.io/eca-bioinf-handbook/handle-vcf.html
+
+Check out some space/time:
+```{sh eval=FALSE}
+srun -c 2 -t 03:00:00 --pty /bin/bash
+
+```
+
+On Sedna, I need to load some modules:
+   bio/bcftools/1.11
+   lib64/htslib/1.11
+
+before merging, I need to zip the vcf files (bgzip file.vcf)
+# merging requires that the files be indexed
+bcftools index first3.vcf.gz
+bcftools index last3.vcf.gz
+
+error with the POPMix file, need to sort first
+bcftools sort -O z --output-file POPMix.vcf.gz POPMix_gtseq_filtered.vcf.gz
+
+Now merge:
+bcftools merge -Oz POPMix.vcf.gz POP_gtseq3_filtered.vcf.gz > POPmerged.vcf.gz
+
+ugh. duplicate sample names. Need to rename the sam files, then remake the vcf files and then sort, index, and merge.
+
+bcftools sort -O z --output-file POPgtseq3.vcf.gz POP_gtseq3_renamed_filtered.vcf
+
