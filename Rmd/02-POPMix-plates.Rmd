@@ -265,19 +265,33 @@ Read in some metadata to take a closer look at those samples/assignments.
 POPmix_samplesheet <- read_csv("../data/samplesheets/20230308_POPMix_SebastesLarvae.csv", skip = 19)
 
 meta_spp <- read_xlsx("../../rockfish-species-id/data_AFSC/POP_northerns_duskies_to_gtseq.xlsx")
-meta_spp$ABLG <- as.character(meta_spp$ABLG)
+
+# fix the metadata - apparently it was completely wrong.
+meta_fixed <- meta_spp %>%
+  #filter(SpeciesName %in% c("Sebastes ciliatus", "Sebastes variabilis")) %>%
+  mutate(SpeciesName = ifelse(str_detect(AlternateID_s_, "Wes"), "Sebastes variabilis", SpeciesName)) %>%
+  mutate(SpeciesName = ifelse(str_detect(AlternateID_s_, "LDRYAK97"), "Sebastes variabilis", SpeciesName)) %>%
+    mutate(SpeciesName = ifelse(str_detect(AlternateID_s_, "DLRKOD97"), "Sebastes variabilis", SpeciesName)) 
+
+meta_fixed %>%
+  write_csv("../../rockfish-species-id/data_AFSC/POP_northerns_duskies_to_gtseq_FIXEDmetadata20230327.csv")
+
+meta_fixed$ABLG <- as.character(meta_fixed$ABLG)
 
 # join those to get the species
 meta_for_gtseqMix <- POPmix_samplesheet %>%
   filter(Sample_Project == "POPMix") %>%
-       left_join(., meta_spp, by = c("Sample_ID" = "ABLG")) %>%
+       left_join(., meta_fixed, by = c("Sample_ID" = "ABLG")) %>%
   select(Sample_ID, SpeciesName) %>%
   mutate(id = row_number()) %>%
   mutate(s = "POPMix_s") %>%
   unite(col = "s_num", s, id, sep = "") %>%
   rename(grp = SpeciesName)
 
-meta_for_gtseqMix
+meta_for_gtseqMix %>%
+  group_by(grp) %>%
+  tally()
+
 ```
 
 ```{r}
@@ -330,7 +344,7 @@ convert_to_genind_pca(long_df_w_strata, "POPmix_POPgtseq3_comboPCA")
 ```{r}
 # just the duskies
 duskies <- long_df_w_strata %>%
-  filter(!STRATA %in% c("Sebastes polyspinis", "Sebastes alutus"))
+  filter(STRATA %in% c("Sebastes variabilis", "Sebastes ciliatus"))
 
 # genind conversion and pca plotting
 convert_to_genind_pca(duskies, "duskiesPCA")
@@ -343,7 +357,7 @@ convert_to_genind_pca(duskies, "duskiesPCA")
 ```{r}
 # just the POP
 pop_groups <- long_df_w_strata %>%
-  filter(STRATA %in% c("Sebastes alutus", "A", "B", "C", "D", "B1", "B2", "B3", "B4"))
+  filter(STRATA %in% c("A", "B", "C", "D", "B1", "B2", "B3", "B4"))
 
 # genind conversion and pca plotting
 convert_to_genind_pca(pop_groups, "POPgroups_PCA")
