@@ -19,7 +19,7 @@ library(tidyr)
 call_genos_from_haplotRDS <- function(path, min_depth1 = 10, min_depth2 = 6, min_balance = 0.4) {
   
   rds <- readRDS(path) %>%
-    tbl_df() %>%
+    tibble::as_tibble() %>%
     select(-sum.Phred.C, -max.Phred.C, -group) %>%
     filter(rank <= 2) %>%
     arrange(id, locus, rank) %>%

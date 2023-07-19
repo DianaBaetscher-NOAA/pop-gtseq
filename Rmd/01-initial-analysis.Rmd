@@ -1,6 +1,6 @@
 ---
 title: "01-initial-analysis"
-output: html_notebook
+output: github_document
 ---
 
 2 March 2023
@@ -19,7 +19,7 @@ source("../R/microhaplot-genos-funcs.R")
 ```
 
 ```{r}
-genos_long <- call_genos_from_haplotRDS("../data/rds_files/POP_gtseq3.rds")
+genos_long <- call_genos_from_haplotRDS("../data/rds_files/POP_gtseq_fullrun1_renamed.rds")
 
 
 ```
@@ -29,10 +29,41 @@ genos_long %>%
   group_by(locus) %>%
   filter(!is.na(allele.balance)) %>%
   summarise(loc_depth = sum(depth)) %>%
-  arrange(desc(loc_depth))
+  arrange(desc(loc_depth)) #%>%
+  # select(locus) %>%
+  # write_csv("csv_outputs/test_fullrun1_loc_list.csv")
 
 ```
 Only 102 loci are in the VCF file.
+
+
+Take a look at the dataset before filtering
+
+```{r}
+genos_long %>%
+  #unite(gtseq_run, id, col = "sample", remove = F) %>%
+  ggplot(aes(x = reorder(id, depth), y = reorder(locus, depth), fill = log(depth))) +
+  geom_tile()
+
+```
+There's a lot of missing data.
+
+How many samples with how much missing data?
+```{r samples-w-missing-data}
+genos_long %>%
+  group_by(id) %>%
+  filter(!is.na(depth)) %>%
+  summarise(reads = sum(depth)) %>%
+  arrange(desc(reads)) %>%
+  ggplot(aes(x = id, y = reads)) +
+  geom_bar(stat = "identity") +
+  theme(
+    axis.text.x = element_text(angle = 90, size = 6)
+  )
+
+```
+
+
 
 
 ## Locus evaluation
@@ -67,8 +98,9 @@ Missing data:
 locs_to_toss <- genos_long %>%
   group_by(locus) %>%
   mutate(missingness = ifelse(is.na(allele), 1, 0)) %>%
-  summarise(sum(missingness)) %>% # 102 loci x2 = total
-  filter(`sum(missingness)`>102) %>% # more than 50% missing data
+  summarise(sum(missingness)) %>% 
+  arrange(desc(`sum(missingness)`)) %>%
+  filter(`sum(missingness)`>384) %>% # more than 50% missing data
   select(locus) # drop those loci for now and see how the assignment goes
 
 # just the keepers
@@ -119,14 +151,13 @@ Total number of samples = 95
 
 ```{r}
 # 25% missing data
-198*0.25
 
 inds_to_toss <- genos_locs_filtered %>%
   group_by(id) %>%
   mutate(missingness = ifelse(is.na(allele), 1, 0)) %>%
   summarise(sum(missingness)) %>%
   arrange(desc(`sum(missingness)`)) %>%
-  filter(`sum(missingness)` > 50) # remove samples with >25% missing data
+  filter(`sum(missingness)` > 31) # remove samples with >25% missing data (121 loci * .25 = )
 
 # just the keepers
 genos_locs_ind_filtered <- genos_locs_filtered %>%
@@ -134,6 +165,7 @@ genos_locs_ind_filtered <- genos_locs_filtered %>%
 
 
 ```
+
 
 How many indivs retained?
 
@@ -152,7 +184,7 @@ genos_locs_ind_filtered  %>%
   ggplot(aes(x = reorder(locus, depth), y = reorder(id, depth), fill = log10(depth))) +
   geom_tile()
 
-ggsave("pdf_outputs/POPheatmap.pdf")
+#ggsave("pdf_outputs/POPheatmap.pdf")
 ```
 
 That's a strange pattern - with NAs for some individuals in some of the higher read depth loci. Variation in the primer sites across POP groups?

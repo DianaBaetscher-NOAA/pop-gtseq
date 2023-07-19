@@ -1,0 +1,1385 @@
+---
+title: "04-all-samples-with-merged-vcf"
+author: "Diana Baetscher"
+date: "2023-07-07"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The data included here consists of 7 MiSeq runs, for which samples were re-numbered, VCF files merged, and genotypes called using the "all_pop.vcf" file in microhaplot.
+UPDATE: the all_pop.vcf file was missing variants from some of the individual MiSeq runs and so I remade the merged VCF file. The new version is called "pop02_03_04_05_06_merged.vcf."
+
+
+We need to test the baseline for assignment using these haplotypes and then 
+
+
+Using the rds file output from microhaplot:
+1. read in rds files
+2. apply read depth filters
+3. apply allele balance filter
+
+Then,
+4. add metadata (ABLG number)
+5. check for duplicate samples 
+6. check for duplicate genotypes
+
+
+To save some bandwidth, I cycled over the individual rds files and merged them with their ABLG numbers in `04.0-read-in-rds-files.Rmd` and will read in that dataframe here.
+
+```{r load-libs-and-funcs}
+library(tidyverse)
+library(readxl)
+library(stringr)
+library(lubridate)
+# map packages
+library(ggplot2)
+library(sf)  
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+
+source("../R/microhaplot-genos-funcs.R")
+source("../R/pca-funcs.R")
+```
+
+
+```{r read-in-genos}
+#### Call genos from the microhaplot rds files ####
+
+# this next step uses a little data frame that has the names and GTSeq run numbers
+# I got that file like this:
+# dsb:rds_files dianabaetscher$ pwd
+# /Users/dianabaetscher/Desktop/NOAA_grad/git-repos/rockfish-species-id/new_baseline_data/feather_files
+# dsb:feather_files dianabaetscher$ ls -l | awk 'BEGIN {print "gtseq_run", "file"} NR >1 && !/posinfo/ {num = $NF; gsub(/gtseq/, "", num); gsub(/[._].*$/, "", num);  print num, $NF}' > ../rds-file-list.txt 
+
+
+# get the names of the files
+# fdf <- read.table("../data/merged-rds-file-list.txt", stringsAsFactors = FALSE, header = TRUE) %>%
+#   tbl_df()
+# dir <- "../data/rds_files/rds_files_new"
+# 
+# 
+# # cycle over them, read them and add the gtseq_run column on each.
+# # at the end, bind them together.
+# genos_long <- lapply(1:nrow(fdf), function(i) {
+#   message("Working on ", fdf$file[i])
+#   call_genos_from_haplotRDS(path = file.path(dir, fdf$file[i])) %>%
+#     mutate(gtseq_run = fdf$gtseq_run[i]) %>%
+#     select(gtseq_run, everything())
+# }) %>%
+#   bind_rows()
+# 
+# # we go ahead and save it in data/processed, with xz compression
+# saveRDS(genos_long, file = "../data/processed/called_genos.rds", compress = "xz")
+# 
+# 
+# #### In the end, let us get a data frame that includes genotypes for all the individuals  ####
+# # and which explicitly has NAs in places where data are missing, and also 
+# # has the NMFS_DNA_ID on there
+# genos_long_explicit_NAs <- genos_long %>%
+#   select(gtseq_run, id) %>%
+#   unique() %>%
+#   unite(col = gid, sep = "_", gtseq_run, id) %>%
+#   select(gid) %>%
+#   unlist() %>%
+#   unname() %>%
+#   expand.grid(gid = ., locus = unique(genos_long$locus), gene_copy = 1:2, stringsAsFactors = FALSE) %>%
+#   tbl_df() %>% 
+#   separate(gid, into = c("gtseq_run", "id"), convert = TRUE) %>%
+#   left_join(., genos_long) %>%
+#   arrange(gtseq_run, id, locus, gene_copy)
+# 
+# # and then save that
+# saveRDS(genos_long_explicit_NAs, file = "../data/processed/called_genos_na_explicit.rds", compress = "xz")
+  
+```
+
+### Add samplesheet/metadata/ABLG numbers
+
+Get the samplesheet info:
+```{r organize-samplesheets}
+# samplesheet info for all seven plates
+# list of files in samplesheets directory
+
+ss_data_all <- list.files(path = "../data/samplesheets/",  # Identify all CSV files
+                       pattern = "*.csv", full.names = TRUE) %>% 
+  lapply(read_csv, skip = 19) %>%                              # Store all files in list
+  bind_rows                                         # Combine data sets into one data set 
+
+# remove the non-POP data from samplesheets
+pop_ss <- ss_data_all %>%
+  filter(Sample_Project %in% c("POP", "POPMix")) %>%
+  mutate(Sample_ID = str_replace(Sample_ID, "ABLG", "")) # make the ABLG number consistently formatted
+
+```
+
+Take a quick look at the metadata:
+Avoid importing the full metadata unless something changes - this takes a while and throws a bunch of warnings.
+```{r organize-metadata}
+# meta data exported from the database
+#meta <- read_xlsx("../data/samples/POP_database_export_May2023.xlsx", sheet = "Sheet1")
+
+# narrow that down to just POP
+# pop <- meta %>%
+#   filter(SpeciesName == "Sebastes alutus")
+# # the ABLG number is currently numeric - fix that
+# pop$ABLG <- as.character(pop$ABLG)
+# 
+# pop %>% 
+#   write_rds("../data/POP_metadata.rds")
+
+pop <- read_rds("../data/POP_metadata.rds")
+
+
+# combine samplesheet and metadata info
+POP_meta_ss <- pop_ss %>%
+  left_join(., pop, by = c("Sample_ID" = "ABLG")) %>%
+  select(Sample_ID, Sample_Plate, id, gtseq_run, SpeciesName, StartLatitudeDD, StartLongitudeDD, EndLatitudeDD, EndLongitudeDD, CruiseID, HaulID, StationID, DepthM, LengthMM, DonatingLab)
+
+# now add the ABLG number onto the genos dataframe
+# genos_ablg <- POP_meta_ss %>%
+#   select(Sample_ID, id, gtseq_run) %>%
+#   left_join(., genos_long_explicit_NAs) %>%
+#   rename(ABLG = Sample_ID)
+
+# quick question:
+# do we have genotypes for samples with no metadata?
+# tmp1 <- POP_meta_ss %>%
+#   select(Sample_ID, id, gtseq_run)
+# 
+# genos_long_explicit_NAs %>%
+#   anti_join(., tmp1)
+# 
+# 
+# genos_ablg %>%
+#   write_rds("../data/processed/genos_ablg.rds")
+```
+Nope. All genotypes have associated metadata. Great.
+
+
+```{r read-in-genos}
+genos_ablg <- read_rds("../data/processed/genos_ablg.rds")
+```
+
+
+### Check for duplicated samples
+
+Ok, so the first time through, I implemented this as we had before; taking the highest read depth genotype per locus for each multiply-genotyped ABLG number. However, the genotype patterns look messy and I'm beginning to suspect that the ABLG numbers associated with some of the samples might not be accurate. So, to avoid interleaving genotypes that do not actually belong to the same individual, let's just remove one of each duplicate pair based on missing data.
+
+
+## Some initial filters
+
+### Take highest read-depth call for multiply-genotyped DNA_IDs
+
+
+Now, here is a harder operation: if an individual is multiply-genotyped, take the
+genotype with the highest total read depth.  
+```{r take-just-one}
+# slow-ish function to get the total read depth column
+tdepth <- function(a, d) {
+  if(any(is.na(a))) {
+    return(NA)
+  }
+  if(a[1]==a[2]) {
+    return(d[1])
+  } else {
+    return(d[1] + d[2])
+  }
+  
+}
+# this takes the highest read-depth instance of each duplicately-genotyped individual.
+geno_one_tmp <- genos_ablg %>%
+  group_by(ABLG, locus, gtseq_run) %>% # this assumes the same sample should not be on the same sequencing run.
+  mutate(total_depth = tdepth(allele, depth)) %>%
+  ungroup() 
+
+duplicates <- geno_one_tmp %>%
+  select(ABLG, gtseq_run) %>%
+  unique() %>%
+  group_by(ABLG) %>%
+  tally() %>%
+  filter(n > 1) %>%
+  select(-n)
+
+duplicates %>%
+  left_join(., geno_one_tmp) %>%
+  group_by(ABLG, gtseq_run) %>%
+  mutate(missing_data = ifelse(is.na(depth), 1, 0)) %>%
+  summarise(miss_loci = sum(missing_data)) %>%
+  pivot_wider(names_from = gtseq_run, values_from = miss_loci)
+  # in nearly every situation, the gtseq run from 0308 has less missing data. Let's go with that.
+  
+dups_to_remove <- duplicates %>%
+   left_join(., geno_one_tmp) %>%
+    filter(gtseq_run == "201")
+
+geno_one_each <- geno_one_tmp %>%
+  anti_join(., dups_to_remove)
+
+# %>%
+#   arrange(ABLG, locus, total_depth, gtseq_run, depth) %>%
+#   group_by(ABLG, locus) %>%
+#   mutate(rank = 1:n()) %>% 
+#   filter(rank <= 2) %>%
+#   ungroup()
+  
+
+# how many samples now?
+geno_tally1 <- geno_one_each %>%
+  group_by(ABLG) %>%
+  tally() %>%
+  arrange(desc(n)) 
+
+```
+2,280 unique ABLG numbers (samples).
+
+(24 samples duplicately genotyped).
+
+
+### Remove missing data and then check for duplicate genotypes
+
+#### Locus evaluation
+
+How many loci and how many alleles?
+
+```{r}
+loc_list <- geno_one_each %>%
+  group_by(locus) %>%
+  filter(!is.na(allele.balance)) %>%
+  summarise(loc_depth = sum(depth)) %>%
+  arrange(desc(loc_depth)) %>%
+  select(locus)
+
+loc_list
+```
+167 loci
+
+
+
+```{r}
+# alleles
+geno_one_each %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique() %>%
+  group_by(locus) %>%
+  tally() %>%
+  arrange(desc(n))
+
+# loci
+locs_to_toss_first <- geno_one_each %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique() %>%
+  group_by(locus) %>%
+  tally() %>%
+  arrange(desc(n)) %>%
+  filter(n < 2 | n > 54)
+
+  
+```
+825 alleles across 167 loci with between 1-60 alleles per locus. Clearly the 60 needs to be removed!!
+
+Three of the loci are monomorphic.
+
+
+```{r toss-the-monomorphic-loci}
+# get rid of those now
+# plus the one with 54 alleles
+genos_no_monomorphic <- geno_one_each %>%
+  anti_join(., locs_to_toss_first)
+
+```
+Take a look at the overall dataset.
+
+```{r}
+genos_no_monomorphic %>%
+  ggplot(aes(x = reorder(locus, depth), y = ABLG, fill = log(depth))) +
+  geom_tile()
+
+```
+
+What about the average depth across loci?
+
+```{r}
+genos_no_monomorphic %>%
+  group_by(locus) %>%
+  mutate(avg_depth = mean(depth, na.rm = TRUE)) %>%
+  ggplot(aes(x = reorder(locus, avg_depth), y = reorder(ABLG, depth), fill = log(depth))) +
+  geom_tile()
+
+```
+Missing data:
+
+```{r}
+# missing data across loci
+locs_to_toss <- genos_no_monomorphic %>%
+  group_by(locus) %>%
+  mutate(missingness = ifelse(is.na(allele), 1, 0)) %>%
+  summarise(sum(missingness)) %>% 
+  filter(`sum(missingness)`>2280) %>% # more than 50% missing data (two alleles per locus)
+  select(locus) # drop those loci for now and see how the assignment goes
+
+# just the keepers
+genos_locs_filtered <- genos_no_monomorphic %>%
+  anti_join(., locs_to_toss)
+
+```
+31 loci with >50% missing data***
+
+***at some point, it would be interesting to return to this if the B4 population has higher rates of missing data (because of divergence).
+
+
+The patterns of missing data across loci are generally weird. Maybe more indicative of species-specific patterns?
+
+```{r}
+# summary of remaining loci
+genos_locs_filtered %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique()
+
+genos_locs_filtered %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique() %>%
+  group_by(locus) %>%
+  tally() %>%
+  arrange(desc(n))
+
+```
+133 loci, 653 alleles
+
+
+```{r}
+# QC check
+genos_locs_filtered %>%
+  group_by(ABLG, locus) %>% # there should be no more than 2 alleles for a given indiv/locus
+  tally() %>%
+  filter(n > 2)
+
+  
+```
+
+## Missing data in individuals
+
+Total number of loci = 133 Total number of gene copies = 266
+
+```{r}
+# 30% missing data
+266*0.3
+
+inds_to_toss <- genos_locs_filtered %>%
+  group_by(ABLG) %>%
+  mutate(missingness = ifelse(is.na(allele), 1, 0)) %>%
+  summarise(sum(missingness)) %>%
+  arrange(desc(`sum(missingness)`)) %>%
+  filter(`sum(missingness)` > 80) # remove samples with >25% missing data
+
+# just the keepers
+genos_locs_ind_filtered <- genos_locs_filtered %>%
+  anti_join(., inds_to_toss)
+
+
+```
+So many individuals dropped out completely! 662 of them! And what's weird is that a LOT have total missing data. Hundreds are missing all data. Wrong species?? Poor quality?
+
+
+```{r add-meta-data-to-missing-data}
+inds_missing_data_meta <- inds_to_toss %>%
+  left_join(., POP_meta_ss, by = c("ABLG" = "Sample_ID")) 
+  
+```
+
+
+Take a closer look:
+```{r missing-data-by-sample}
+genos_locs_filtered %>%
+  group_by(ABLG) %>%
+  mutate(missingness = ifelse(is.na(allele), 1, 0)) %>%
+  summarise(missing_data = sum(missingness)) %>%
+  ggplot(aes(x = missing_data)) +
+  geom_histogram()
+
+```
+
+How many indivs retained?
+
+```{r inds-retained}
+genos_locs_ind_filtered %>%
+  select(ABLG) %>%
+  unique()
+
+```
+1,618 individuals retained.
+
+Take a look at that dataset
+
+```{r}
+genos_locs_ind_filtered  %>%
+  ggplot(aes(x = reorder(locus, depth), y = reorder(ABLG, depth), fill = log10(depth))) +
+  geom_tile()
+
+```
+
+### Matching genotypes
+
+I can draw on some of Eric's CKMRsim functions here... come back to this.
+
+```{r}
+# rock2 <- genos_locs_ind_filtered %>% 
+#   dplyr::select(ABLG, locus, allele) %>%
+#   mutate(Chrom = "GTseq") %>% 
+#   mutate(Pos = as.integer(factor(locus, levels = unique(locus)))) %>%
+#   dplyr::rename(Locus = locus,
+#          Allele = allele) %>%
+#   dplyr::select(ABLG, Chrom, Locus, Pos, Allele) %>%
+#   ungroup()
+# 
+# # get the allele freqs
+# rock_ckmr_markers <- rock2 %>%
+#   filter(!is.na(Allele)) %>% # it is vital to filter out the NAs at this stage
+#   group_by(Chrom, Locus, Pos, Allele) %>%
+#   dplyr::summarise(counts = n()) %>%
+#   group_by(Locus, Pos) %>%
+#   mutate(Freq = counts / sum(counts)) %>%
+#   dplyr::select(-counts) %>%
+#   mutate(AlleIdx = 1,
+#          LocIdx = 1) %>%
+#   reindex_markers()
+```
+
+## Making genotype matrices
+```{r}
+# rock_haps <- no_hi_missers %>%
+#   filter(!is.na(allele)) %>%  # once again, it is critical to remove these at this point
+#   select(NMFS_DNA_ID, locus, gene_copy, allele) %>%
+#   rename(Locus = locus, Allele = allele)
+# 
+# rock_idx_frame <- rock_ckmr_markers %>%
+#   select(Locus, Allele, LocIdx, AlleIdx) %>%
+#   group_by(Locus) %>% # something here is happening that is duplicating some loci in some individuals.
+#   mutate(NumA = n()) %>%  # get the number of alleles at each locus
+#   ungroup() %>%
+#   left_join(rock_haps, .)  %>%  # join the alle_idx's onto the actual genotype data
+#   select(NMFS_DNA_ID, Locus, gene_copy, LocIdx, NumA, AlleIdx) %>%
+#   group_by(NMFS_DNA_ID, Locus) %>%
+#   mutate(gene_copy = 1:2)
+#   spread(key = gene_copy, value = AlleIdx) %>%
+#   mutate(GenoIdx = index_ab(a = `1`, b = `2`, A = NumA))
+# 
+# # make a matrix of genotype integers 
+# wide_rock <- rock_idx_frame %>%
+#   ungroup() %>%
+#   select(NMFS_DNA_ID, LocIdx, GenoIdx) %>%
+#   spread(data = ., key = LocIdx, value = GenoIdx)
+
+```
+
+Don't forget to set NA's to 0, and then decrease each value by 1:
+```{r make-mat}
+# rocky_mat <- as.matrix(wide_kelp[, -1])
+# rownames(rocky_mat) <- wide_kelp$NMFS_DNA_ID
+# rocky_mat[is.na(rocky_mat)] <- 0
+# rocky_mat <- rocky_mat - 1
+# storage.mode(rocky_mat) <-  "integer"
+```
+
+## Looking for duplicated samples
+
+We can quickly look through rocky_mat for pairs of indivs with lots of matching genotypes.
+```{r check-for-dupes}
+# matchers <- pairwise_geno_id(S = rocky_mat, max_miss = 12) %>%
+#   arrange(num_mismatch) %>%
+#   mutate(NMFS_DNA_ID_1 = rownames(rocky_mat)[ind1],
+#          NMFS_DNA_ID_2 = rownames(rocky_mat)[ind2])
+# 
+# full_matchers <- matchers %>%
+#   filter(num_mismatch < 5)
+```
+
+
+
+
+
+
+## Map sample locations
+
+Make a quick map of the sample locations for reference/context while thinking about baseline data.
+```{r mapping-code}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+goa_map <- ggplot(data = world) +
+  geom_sf() +
+  coord_sf(xlim = c(-179, -120), 
+           ylim = c(62, 30), 
+           expand = FALSE) +
+  theme_bw()
+
+goa_map +
+  geom_jitter(data = POP_meta_ss, aes(x = StartLongitudeDD,y = StartLatitudeDD), size = 1, alpha = 0.3, height = 0.2, width = 0.2, color = "dodgerblue") +
+  labs(x = "Longitude",
+       y = "Latitude",
+       title = "Sebastes alutus GTseq sampling distribution") #+
+  # theme(
+  #   legend.text = element_text(face = "italic"),
+  #   axis.title.x = element_text(margin = margin(t = 10)),
+  #   axis.title.y = element_text(margin = margin(r = 10)),
+  # ) +
+ #  scale_y_continuous(breaks = c(56, 58, 60, 62)) +
+ #  scale_x_continuous(breaks = c(-155, -145)) +
+ #  guides(color = guide_legend(
+ #    override.aes = list(alpha = 1, size = 3), 
+ #    label.theme = element_text(size = 12, face = "italic"),
+ #    title.theme = element_text(size = 14)))
+
+```
+
+What are the baseline samples in this case?
+
+There are two ways to analyze these data:
+1) identifying groups (PCA) without regard to baseline samples/assignment
+2) using the baseline samples for which we have lcWGS data to then do assignment of the rest of the samples.
+
+
+We'll need to filter loci for HWE, etc.
+
+Quick look at missing data samples on the map:
+```{r}
+goa_map +
+  geom_jitter(data = inds_missing_data_meta, aes(x = StartLongitudeDD,y = StartLatitudeDD), size = 1, alpha = 0.3, height = 0.2, width = 0.2, color = "darkblue") +
+  labs(x = "Longitude",
+       y = "Latitude",
+       title = "samples removed with missing data")
+
+```
+
+
+
+
+# Taking data through to a PCA
+
+
+The format I need for the PCA is strata, indiv, markers, genotype (allele idx)
+
+
+
+```{r format-alleles-for-PCA}
+# first make integers of the alleles
+alle_idxs <- genos_locs_ind_filtered %>% 
+  #unite(gtseq_run, id, col = "sample", remove = F) %>%
+  dplyr::select(ABLG, locus, gene_copy, allele) %>%
+  group_by(locus) %>%
+  mutate(alleidx = as.integer(factor(allele, levels = unique(allele)))) %>%
+  ungroup() %>%
+  arrange(ABLG, locus, alleidx) # rubias can handle NA's, so no need to change them to 0's
+
+# Make the df match the requirements for tidy_genomic_data
+
+long_df <- alle_idxs %>%
+  select(-allele, -gene_copy) %>%
+  mutate(group = "POP") %>%
+  #left_join(., spp_indiv) %>%
+  #select(species, everything()) %>%
+  rename(INDIVIDUALS = ABLG, STRATA = group, MARKERS = locus, GT = alleidx)
+
+```
+
+
+
+
+Read in some metadata to take a closer look at those samples/assignments.
+
+```{r known-pop-groups}
+# read in metadata for POP gtseq3 run with group designations
+# these 335 individuals are those retained from the lcWGS dataset after filtering
+pops_known <- read_csv("../data/pop_335_population_assignment.csv") %>%
+  mutate(ABLG = str_replace(ABLG, "ABLG", "")) %>% # fix the syntax for matching up with the database/metadata 
+  left_join(., POP_meta_ss, by = c("ABLG" = "Sample_ID")) %>% # add samplesheet/metadata info
+  rename(INDIVIDUALS = ABLG)
+
+# just the group assignments
+pop_grps <- pops_known %>%
+  select(INDIVIDUALS, pop_assign) %>%
+  rename(grp = pop_assign) %>%
+  filter(INDIVIDUALS != "NA_NA")
+
+# and get some genotype info on there
+long_df_w_grps <- long_df %>%
+  left_join(., pop_grps) %>%
+  mutate(STRATA = ifelse(!is.na(grp), grp, STRATA)) %>%
+  select(-grp)
+
+# how many per group?
+long_df_w_grps %>%
+  select(INDIVIDUALS, STRATA) %>%
+  unique() %>%
+  group_by(STRATA) %>%
+  tally()
+
+```
+
+```{r}
+pops_known %>%
+  group_by(pop_assign) %>%
+  tally()
+
+```
+
+
+
+```{r all-samples-pca}
+# reformat genotypes for genind conversion
+# create 3 digit integers from the genotypes
+long_df$GT3 <- Format(long_df$GT, ldigits = 3, digits = 0)
+      
+# fix NAs
+long_df0s <- long_df %>%
+  mutate(GT3 = ifelse(is.na(GT3), "000", GT3))
+      
+# Now combine the GT3 column per indiv/marker:
+# make the genos characters and then try pasting them as strings
+long_df0s$GT3 <- as.character(long_df0s$GT3)
+      
+long_df3digit <- long_df0s %>%
+  group_by(INDIVIDUALS, MARKERS) %>% 
+  arrange(GT3, .by_group = TRUE) %>% 
+  summarise(GENOTYPE = toString(GT3))
+      
+# paste strings together
+long_df3digit$GENOTYPE <- gsub(", ","",long_df3digit$GENOTYPE)
+      
+# add back on species identity as strata
+df_for_conversion <- long_df0s %>% 
+  select(-GT, -GT3) %>%
+  left_join(., long_df3digit) %>%
+  unique() %>%
+  rename(GT = GENOTYPE) %>%
+  mutate(GT = ifelse(GT == "000000", NA, GT))
+      
+df_for_conversion$STRATA <- as.factor(df_for_conversion$STRATA)
+      
+# use the radiator package for this conversion
+pop_genind_df <- write_genind(df_for_conversion)
+   
+# Now that the data is a genind object, we can do all sorts of things using the adegenet package.
+# Allele presence absence data are extracted and NAs replaced using tab:
+pop_dataset <- tab(pop_genind_df, freq = FALSE, NA.method="asis") # double check that is this the appropriate method: options are "as is", "mean", or "zero"
+# frequency - should the data be transformed to relative frequencies
+      
+
+
+## NOT WORKING.
+# make PCA
+# dataset_pop1 <- dudi.pca(pop_dataset, center = TRUE, scale=TRUE, scannf = TRUE) # I lowered this based on the screeplot
+# 
+# pop_pca_df <- rownames_to_column(dataset_pop1$li, var = "indiv")
+# 
+# pop_pca_df %>%
+#   ggplot(aes(x = Axis1, y = Axis2, label = indiv)) +
+#   geom_text(check_overlap = TRUE, size = 2) +
+#   theme_bw()
+# 
+# 
+# as.tibble(pop_genind_df@strata) %>%
+#   left_join(., pop_pca_df, by = c("INDIVIDUALS" = "indiv")) %>%
+#  # filter(STRATA %in% c("D", "C")) %>%
+#   ggplot(aes(x = Axis1, y = Axis2, label = INDIVIDUALS)) +
+#   geom_point(size = 3, alpha = 0.5) +
+#   geom_text(nudge_x = 0.1, nudge_y = 0.1, size = 2) +
+#   theme_bw() +
+#   labs(title = "Sebastes alutus GTseq all samples",
+#        x = "PC1",
+#        y = "PC2")
+
+```
+
+
+## just the POP groups from the 335 samples
+
+```{r just-baseline-samples}
+baseline <- long_df_w_grps %>%
+  filter(STRATA != "POP")
+
+# that function worked.
+convert_to_genind_pca(baseline, "baseline_test_new_mergedVCF")
+
+# and remove the identity of the groups to just visualize the clusters
+baseline_test <- baseline %>%
+  mutate(STRATA = "pop")
+  
+
+convert_to_genind_pca(baseline_test, "Baseline_no_groups")
+```
+It seems like C might be admixed between A and D, which is why there are samples that were assigned to the A and D clusters in the lcWGS data now in C. Admixture analysis would tell us more. Harder to say what's going on with the B clusters.
+
+
+
+
+
+
+
+
+```{r call-func-for-genind-object}
+# pop_gen_df <- convert_to_genind(long_df_w_grps)
+# 
+# pop_gen <- write_genind(pop_gen_df)
+# 
+# # make PCA
+#  # Allele presence absence data are extracted and NAs replaced using tab:
+#       datasetX <- tab(pop_gen, freq = TRUE, NA.method="mean") # double check that is this the appropriate method.
+#       
+#       # make PCA
+#       dataset_pca1 <- dudi.pca(datasetX, center = TRUE, scale=FALSE)
+#       
+#       # colors
+#       mycol <- c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4", "darkmagenta", "goldenrod")
+#       
+#       # visualize the scree plot
+#       fviz_eig(dataset_pca1)
+#       
+# 
+# # convert_to_genind_pca(long_df_w_grps, "POPgtseq_all_runs_merged")
+
+```
+
+
+
+
+What about looking at the mixed collections in comparison to the baseline samples?
+```{r}
+# POP_mix <- long_df_w_grps %>%
+#   mutate(STRATA = ifelse(STRATA == "POP", "unknowns", "lcWGS_samples"))
+# 
+# convert_to_genind_pca(POP_mix, "POP_mixed_samples_test")
+
+```
+
+Ok, and finally, what about the B groups (i.e., not A, C, and D)
+
+```{r}
+B_groups <- long_df_w_grps %>%
+  filter(!STRATA %in% c("A", "C", "D", "POP"))
+
+convert_to_genind_pca(B_groups, "POP_B_groups")
+```
+
+I'm not convinced we have the resolution for those...
+
+
+Go sleuthing a bit more on the baseline question and missing data issues.
+
+```{r explore-missing-data-w-metadata-context}
+# summarize the missing data per individual
+# then add metadata
+missing_w_meta <- genos_locs_filtered %>%
+  group_by(gtseq_run, id) %>%
+  mutate(missingness = ifelse(is.na(allele), 1, 0)) %>%
+  summarise(missing_data = sum(missingness)) %>%
+  left_join(., POP_meta_ss) 
+  
+goa_map +
+  geom_jitter(data = missing_w_meta, aes(x = StartLongitudeDD,y = StartLatitudeDD, color = missing_data), size = 1, alpha = 0.3, height = 0.2, width = 0.2) +
+  labs(x = "Longitude",
+       y = "Latitude",
+       title = "Sebastes alutus GTseq missing data") 
+
+toss_ind <- missing_w_meta %>%
+  filter(missing_data > 200)
+
+goa_map +
+  geom_jitter(data = toss_ind, aes(x = StartLongitudeDD,y = StartLatitudeDD, color = missing_data), size = 1, alpha = 0.3, height = 0.2, width = 0.2) +
+  labs(x = "Longitude",
+       y = "Latitude",
+       title = "Sebastes alutus GTseq missing data") 
+
+
+# What about the keepers
+keep_ind <- missing_w_meta %>%
+  filter(missing_data < 77)
+
+goa_map +
+  geom_jitter(data = keep_ind, aes(x = StartLongitudeDD,y = StartLatitudeDD, color = missing_data), size = 1, alpha = 0.3, height = 0.2, width = 0.2) +
+  labs(x = "Longitude",
+       y = "Latitude",
+       title = "Sebastes alutus GTseq missing data") 
+```
+
+
+Ok, so it's a little light on the southern samples, but they're included.
+
+Can I put the strata info for the baseline samples on the map?
+
+```{r}
+grps_for_map <- missing_w_meta %>%
+  left_join(., pop_grps, by = c("Sample_ID" = "INDIVIDUALS")) %>%
+  filter(!is.na(grp)) %>%
+  filter(grp != "B")
+  
+
+goa_map +
+  geom_jitter(data = grps_for_map, aes(x = StartLongitudeDD,y = StartLatitudeDD, color = grp), size = 1, alpha = 0.7, height = 0.2, width = 0.2) +
+  facet_wrap(~grp) +
+  labs(x = "Longitude",
+       y = "Latitude",
+       title = "Sebastes alutus baseline group assignments from lcWGS") +
+  scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
+  theme(
+    axis.text = element_text(size = 8),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+  )
+
+ggsave("pdf_outputs/POP_baseline_group_distribution_panels.pdf", width = 10, height = 7)
+```
+
+
+
+Some notes:
+B4 appears exclusively SE of Yakutat, and is the only group found in the lower 48 with the exception of one B2 sample in Northern CA.
+B1 is distributed throughout the central GOA.
+
+Laura mentioned that at the time the GTseq panel was developed, the four separate B groups were not clear and so were not targeted for differentiation using these markers.
+
+
+Looking back at Laura's slides covering the wGS dataset, not all of the individuals were adults...
+
+```{r small-sizes}
+# we know that juveniles might be distributed differently
+# small_fish <- grps_for_map %>%
+#   left_join(., meta) %>%
+#   filter(LengthMM != 0 & LengthMM < 200)
+# 
+# 
+# tmp <- grps_for_map %>%
+#   anti_join(., small_fish)
+# 
+# # just adults
+# goa_map +
+#   geom_jitter(data = tmp, aes(x = StartLongitudeDD,y = StartLatitudeDD, color = grp), size = 1, alpha = 0.7, height = 0.2, width = 0.2) +
+#   facet_wrap(~grp) +
+#   labs(x = "Longitude",
+#        y = "Latitude",
+#        title = "Sebastes alutus baseline group assignments from lcWGS (adults)") +
+#   scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
+#   theme(
+#     axis.text = element_text(size = 8),
+#     axis.title.x = element_text(margin = margin(t = 10)),
+#     axis.title.y = element_text(margin = margin(r = 10))
+#   )
+# 
+# 
+# ggsave("pdf_outputs/POP_adult_baseline_group_distribution_panels.pdf", width = 10, height = 7)
+```
+A, D, and B are very different. C is somewhat intermediate to A and D.
+All groups co-occur in the central GOA.
+
+
+Removing the small fish from the PCAs too:
+```{r}
+# big_fish <- pop_groups %>%
+#   inner_join(., tmp)
+#   
+# convert_to_genind_pca(big_fish, "Baseline_groups_adults")
+
+```
+
+
+Metadata for POP baseline?
+```{r metadata-for-pop-baseline}
+meta_for_strata <- POP_meta_ss %>%
+  unite(gtseq_run, id, col = "INDIVIDUALS")
+
+baseline_meta <- grps_for_map %>%
+   left_join(., meta_for_strata)
+  
+baseline_meta %>%
+  filter(DonatingLab == "Jacek Maselko")
+
+```
+
+
+
+Read in the YOY IDs that were used to define group membership for the lcWGS data (according to Laura Timm).
+
+```{r original-groups-from-yoys}
+yoy <- read_xlsx("../data/Jacek_YOY_for_lcWGS_define_groups.xlsx") %>%
+  mutate(ABLG = str_replace(ABLG, "ABLG", ""))
+
+YOY_baseline <- yoy %>%
+  left_join(., baseline_meta, by = c("ABLG" = "Sample_ID")) %>%
+  select(ABLG, INDIVIDUALS, pop_assign, grp) %>%
+  left_join(long_df_w_grps) %>%
+  select(INDIVIDUALS, MARKERS, GT, pop_assign) %>%
+  rename(STRATA = pop_assign)
+
+
+#convert_to_genind_pca(YOY_baseline, "yoy_baseline_test")
+```
+
+Compare depth distributions for samples in groups A and D:
+
+```{r}
+baseline_meta %>%
+  group_by(grp) %>%
+  filter(!is.na(DepthM)) %>%
+  filter(DepthM != 0) %>%
+  filter(grp != "B") %>% # too few samples
+  ggplot(aes(x = grp, y = DepthM)) +
+  geom_boxplot() +
+  labs(x = "Sebastes alutus, genetic group",
+       y = "Depth (m)",
+       title = "Sebastes alutus, collection depth by genetic group") +
+  theme(
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+  )
+
+```
+How many total samples per group?
+```{r}
+baseline_meta %>%
+  anti_join(., YOY_baseline) %>%
+  group_by(grp) %>%
+   filter(!is.na(DepthM)) %>%
+  filter(DepthM != 0) %>%
+  tally()
+
+```
+Groups A and D are essentially non-overlapping in depth, with A being deeper and D shallower.
+
+
+Laura gave me the file that included the samples that were used to identify group membership for GTseq design (assuming admixed individuals were not used, but we can verify that later).
+
+
+```{r inds-for-panel-design}
+gtseq_panel_pops <- read_xlsx("../data/pop_167_grps_used_for_GTseq_design.xlsx") %>%
+  mutate(ABLG = str_replace(ABLG, "ABLG", ""))
+
+```
+I removed duplicates earlier in the workflow.
+
+
+
+```{r inds-for-panel-design-plot}
+gtseq_panel_ind_long_df <- gtseq_panel_pops %>%
+  inner_join(., long_df_w_grps, by = c("ABLG" = "INDIVIDUALS")) %>%
+  select(-STRATA) %>%
+  rename(INDIVIDUALS = ABLG, STRATA = pop_assign)
+
+convert_to_genind_pca(gtseq_panel_ind_long_df, "gtseq_panel_design_indivs_NEW_mergedVCF")
+
+```
+Better, but not 100% assignment with those individuals. I think admixture might be the next step?
+
+
+For those individuals that are clustering with the wrong group, do they have high amounts of missing data, or other potential explanations?
+
+Because I want to play with this more, I'll import the function for the PCA here and break it down:
+```{r ascertainment-samples}
+long_df_strata <- gtseq_panel_ind_long_df
+  
+      # reformat genotypes for genind conversion
+      # create 3 digit integers from the genotypes
+      long_df_strata$GT3 <- Format(long_df_strata$GT, ldigits = 3, digits = 0)
+      
+      # fix NAs
+      long_df0s <- long_df_strata %>%
+        mutate(GT3 = ifelse(is.na(GT3), "000", GT3))
+      
+      # Now combine the GT3 column per indiv/marker:
+      # make the genos characters and then try pasting them as strings
+      long_df0s$GT3 <- as.character(long_df0s$GT3)
+      
+      long_df3digit <- long_df0s %>%
+        group_by(INDIVIDUALS, MARKERS) %>% 
+        arrange(GT3, .by_group = TRUE) %>% 
+        summarise(GENOTYPE = toString(GT3))
+      
+      # paste strings together
+      long_df3digit$GENOTYPE <- gsub(", ","",long_df3digit$GENOTYPE)
+      
+      # add back on species identity as strata
+      df_for_conversion <- long_df0s %>% 
+        select(-GT, -GT3) %>%
+        left_join(., long_df3digit) %>%
+        unique() %>%
+        rename(GT = GENOTYPE) %>%
+        mutate(GT = ifelse(GT == "000000", NA, GT))
+      
+      df_for_conversion$STRATA <- as.factor(df_for_conversion$STRATA)
+      
+      # use the radiator package for this conversion
+      genind_df <- write_genind(df_for_conversion)
+      
+      
+      # Now that the data is a genind object, we can do all sorts of things using the adegenet package.
+      # Make PCA
+      
+      # Allele presence absence data are extracted and NAs replaced using tab:
+      datasetX <- tab(genind_df, freq = FALSE, NA.method="asis") # double check that is this the appropriate method. This didn't seem to make a difference between using T/F and "mean" or "asis"
+      
+      # make PCA
+      dataset_pca1 <- dudi.pca(datasetX, center = TRUE, scale=FALSE, scannf = FALSE, nf = 6) # I lowered this based on the screeplot
+      
+      dataset_pca1$li # these are the principal components of the analysis; these are the synthetic variables summarizing the genetic diversity, usually visualized using scatterplots.
+      
+      dataset_pca1$c1 # these are the allele loadings, used to compute linear combinations forming the PCs; squared, they represent the contribution to each PCs.
+
+#s.label(dataset_pca1$li)
+      
+# PC axes 1 and 2    
+s.class(dataset_pca1$li, fac=pop(genind_df),
+col=transp(funky(6),.7),
+axesel=T, cstar=0, cpoint=1)
+#add.scatter.eig(dataset_pca1$eig[1:50],3,1,2, ratio=.3)
+
+# PC axes 2 and 3
+s.class(dataset_pca1$li, fac=pop(genind_df),
+        xax=2, yax=3,
+        col=transp(funky(6),.9),
+        axesel=FALSE, cstar=0, cpoint=1)
+add.scatter.eig(dataset_pca1$eig[1:50],3,2,3, ratio=.3)
+      
+
+dataset_pca1$eig[4]
+pc1 <- dataset_pca1$li[,1]
+var(pc1)
+
+eig.perc <- 100*dataset_pca1$eig/sum(dataset_pca1$eig)
+head(eig.perc)
+
+
+## allele contributions
+loadingplot(dataset_pca1$c1^2, cex.lab = 0.5, lab.jitter = 1)
+
+
+loadingplot(dataset_pca1$c1^2, threshold = 0.0085)
+
+# which alleles are driving the patterns?
+imp_alleles <- rownames_to_column(dataset_pca1$c1^2, var = "locus") %>%
+  filter(CS1 > 0.007)
+# 
+# imp_alleles %>%
+#   tidyr::separate_wider_delim(locus, ".", names = c("chr", "allele"))
+```
+
+
+```{r create-pca-output-more-usable}
+pca_df <- rownames_to_column(dataset_pca1$li, var = "indiv")
+
+# Calculate proportion of total variance
+eig.perc <- 100*dataset_pca1$eig/sum(dataset_pca1$eig)
+head(eig.perc)
+
+
+
+as.tibble(genind_df@strata) %>%
+  left_join(., pca_df, by = c("INDIVIDUALS" = "indiv")) %>%
+ # filter(STRATA %in% c("D", "C")) %>%
+  ggplot(aes(x = Axis1, y = Axis2, label = INDIVIDUALS, color = STRATA)) +
+  geom_point(size = 3, alpha = 0.5) +
+  geom_text(nudge_x = 0.1, nudge_y = 0.1, size = 2) +
+  theme_bw() +
+  labs(title = "Sebastes alutus GTseq ascertainment samples",
+       x = "PC1, 41.3%",
+       y = "PC2, 11.3%",
+       color = "Genetic group \n (lcWGS data)") +
+  scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue")) +
+  theme(
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+  )
+  
+ggsave("pdf_outputs/gtseq_ascertainment_samples_strata_pca_PC1_PC2.pdf", width = 8, height = 6)
+
+
+as.tibble(genind_df@strata) %>%
+  left_join(., pca_df, by = c("INDIVIDUALS" = "indiv")) %>%
+ # filter(STRATA %in% c("D", "C")) %>%
+  ggplot(aes(x = Axis2, y = Axis3, label = INDIVIDUALS, color = STRATA)) +
+  geom_point(size = 3, alpha = 0.5) +
+  geom_text(nudge_x = 0.1, nudge_y = 0.1, size = 2) +
+  theme_bw() +
+  labs(title = "Sebastes alutus GTseq ascertainment samples",
+       x = "PC2, 11.3%",
+       y = "PC3, 3.8%",
+       color = "Genetic group \n (lcWGS data)") +
+  scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue")) +
+  theme(
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+  )
+  
+ggsave("pdf_outputs/gtseq_ascertainment_samples_strata_pca_PC2_PC3.pdf", width = 8, height = 6)
+```
+
+
+
+Samples that fall outside their target groups:
+
+748
+710
+661
+693
+781
+780
+722
+762
+663
+775
+721
+783
+738
+
+Next steps: remove these samples from the "baseline." Look at HWE, admixture, etc.
+
+
+Look at A vs. D without B present:
+
+```{r pca-without-B}
+ascer_AandD <- gtseq_panel_ind_long_df %>%
+  filter(STRATA %in% c("A", "C", "D"))
+  
+ # reformat genotypes for genind conversion
+# create 3 digit integers from the genotypes
+ascer_AandD$GT3 <- Format(ascer_AandD$GT, ldigits = 3, digits = 0)
+      
+# fix NAs
+ascer_AandD <- ascer_AandD %>%
+  mutate(GT3 = ifelse(is.na(GT3), "000", GT3))
+      
+# Now combine the GT3 column per indiv/marker:
+# make the genos characters and then try pasting them as strings
+ascer_AandD$GT3 <- as.character(ascer_AandD$GT3)
+      
+ascer_3digit <- ascer_AandD %>%
+    group_by(INDIVIDUALS, MARKERS) %>% 
+    arrange(GT3, .by_group = TRUE) %>% 
+    summarise(GENOTYPE = toString(GT3))
+      
+# paste strings together
+ascer_3digit$GENOTYPE <- gsub(", ","",ascer_3digit$GENOTYPE)
+      
+# add back on species identity as strata
+ascer_for_conversion <- ascer_AandD %>% 
+        select(-GT, -GT3, -MARKERS) %>%
+        left_join(., ascer_3digit) %>%
+        unique() %>%
+        rename(GT = GENOTYPE) %>%
+        mutate(GT = ifelse(GT == "000000", NA, GT))
+      
+ascer_for_conversion$STRATA <- as.factor(ascer_for_conversion$STRATA)
+      
+# use the radiator package for this conversion
+ascer_genind <- write_genind(ascer_for_conversion)
+      
+# Allele presence absence data are extracted and NAs replaced using tab:
+ascer_data_pca <- tab(ascer_genind, freq = FALSE, NA.method="asis") # double check that is this the appropriate method. This didn't seem to make a difference between using T/F and "mean" or "asis"
+      
+# make PCA
+ascer_pca <- dudi.pca(ascer_data_pca, center = TRUE, scale=FALSE, scannf = FALSE, nf = 6) # I lowered this based on the screeplot
+      
+AandD_df <- rownames_to_column(ascer_pca$li, var = "indiv")
+
+# plot PCA axes 1 and 2
+as.tibble(ascer_genind@strata) %>%
+  left_join(., AandD_df, by = c("INDIVIDUALS" = "indiv")) %>%
+ # filter(STRATA %in% c("D", "C")) %>%
+  ggplot(aes(x = Axis1, y = Axis2)) +
+  geom_point(aes(color = STRATA), size = 3, alpha = 0.5) +
+  geom_text(aes(label = INDIVIDUALS, color = STRATA), nudge_x = 0.1, nudge_y = 0.1, size = 2) +
+  theme_bw() +
+  labs(title = "Sebastes alutus GTseq ascertainment samples \n groups A and D; PC1, PC2",
+       x = "PC1, 21.4%",
+       y = "PC2, 11.6%",
+       color = "Genetic group \n (lcWGS data)") +
+  scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue")) +
+  theme(
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+  )
+  
+ggsave("pdf_outputs/ascertainment_A_and_D_grps_PC1_PC2.pdf", width = 8, height = 6)
+
+
+
+# plot Axes 2 and 3
+as.tibble(ascer_genind@strata) %>%
+  left_join(., AandD_df, by = c("INDIVIDUALS" = "indiv")) %>%
+ # filter(STRATA %in% c("D", "C")) %>%
+  ggplot(aes(x = Axis2, y = Axis3)) +
+  geom_point(aes(color = STRATA), size = 3, alpha = 0.5) +
+  geom_text(aes(label = INDIVIDUALS, color = STRATA), nudge_x = 0.1, nudge_y = 0.1, size = 2) +
+  theme_bw() +
+  labs(title = "Sebastes alutus GTseq ascertainment samples \n groups A and D; PC2, PC3",
+       x = "PC2, 11.6%",
+       y = "PC3, 6.1%",
+       color = "Genetic group \n (lcWGS data)") +
+  scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue")) +
+   theme(
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+  )
+  
+ggsave("pdf_outputs/ascertainment_A_and_D_grps_PC2_PC3.pdf",  width = 8, height = 6)
+
+```
+How much variation is explained by PC1 and PC2 in that case?
+
+Eigenvalues correspond to absolute variances. However, we sometimes
+want to express these values as percentages of the total variation in the data.
+
+```{r}
+# Calculate proportion of total variance
+ascer_eig.perc <- 100*ascer_pca$eig/sum(ascer_pca$eig)
+head(ascer_eig.perc)
+```
+
+
+
+## Use adegenet for some classic pop gen to go back and check on loci
+
+Check out the ascertainment data first:
+
+```{r using-the-genind-obj-from-above}
+tmp <- summary(genind_df)
+```
+
+
+```{r}
+plot(tmp$Hexp, tmp$Hobs, pch=20, cex=3, xlim=c(.4,1), ylim=c(.4,1))
+abline(0,1,lty=2)
+
+```
+Heterozygosity deficit likely due to population structure.
+
+
+## Admixture results from lcWGS data
+
+From Laura Timm
+
+```{r admixture-results-for-lcWGS-data}
+# each sheet in this xlsx doc is for a different level of K
+admix <- read_xlsx("../data/SALU-SSCH_admix_k2-k9.xlsx", sheet = "k=5") %>%
+  mutate(ABLG = str_replace(ABLG, "ABLG", ""))
+
+admix %>%
+  pivot_longer(3:7, names_to = "group", values_to = "proportion") %>%
+  ggplot(aes(x = ABLG, y = proportion, fill = group)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, size = 5)
+  )
+
+```
+
+
+```{r read-in-multiple-sheets}
+path <- "../data/SALU-SSCH_admix_k2-k9.xlsx"
+admix <- path %>%
+  excel_sheets() %>%
+  set_names() %>% 
+  map_df(~ read_excel(path = path, sheet = .x), .id = "sheet")
+print(admix, n = Inf)
+
+# pivot that to long-format
+admix_df <- admix %>%
+  mutate(ABLG = str_replace(ABLG, "ABLG", "")) %>%
+  pivot_longer(4:12, names_to = "group", values_to = "proportion") %>%
+  filter(!is.na(proportion)) 
+
+admix_df %>%
+  ggplot(aes(x = ABLG, y = proportion, fill = group)) +
+  geom_bar(stat = "identity") +
+    facet_grid(rows = vars(sheet)) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, size = 5)
+  ) +
+   scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "midnightblue", "sienna", "slateblue", "darkorange", "purple4", "firebrick"))
+
+ggsave("pdf_outputs/lcwgs_admixture.pdf", width = 12, height = 8)
+```
+
+
+
+How to reorder the plots based on proportion ancestry?
+Probably don't need to go higher than K=6 or K=7.
+
+```{r subset-to-the-ascertainment-samples}
+admix_df %>%
+  inner_join(., gtseq_panel_pops) %>%
+   ggplot(aes(x = ABLG, y = proportion, fill = group)) +
+  geom_bar(stat = "identity") +
+    facet_grid(rows = vars(sheet)) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, size = 6)
+  ) +
+   scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "midnightblue", "sienna", "slateblue", "darkorange", "purple4", "firebrick"))
+  
+
+ggsave("pdf_outputs/lcwgs_admixture_gtseq_ascertainment_samples.pdf", width = 12, height = 8)
+
+```
+
+
+How many pure forms are present at which k values?
+```{r}
+admix_df %>%
+  filter(proportion > 0.99) %>%
+  inner_join(., gtseq_panel_pops) %>%
+  ggplot(aes(x = ABLG, y = proportion, fill = group)) +
+  geom_bar(stat = "identity") +
+    facet_grid(rows = vars(sheet)) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, size = 6)
+  ) +
+   scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "midnightblue", "sienna", "slateblue", "darkorange", "purple4", "firebrick"))
+
+
+ggsave("pdf_outputs/lcwgs_admixture_gtseq_ascertainment_pure_forms.pdf", width = 12, height = 8)
+
+```
+
+Seems like this is made challenging by the different levels of differentiation among the groups. Performing admixture again on different subsets could be informative.
+
+```{r}
+# create an order
+admix_df %>%
+  mutate(order = ifelse(pop_assign == "A", 1, 2)) %>%
+  mutate(order = ifelse(pop_assign == "C", 3, order)) %>%
+    mutate(order = ifelse(pop_assign == "D", 4, order)) %>%
+  inner_join(., gtseq_panel_pops) %>%
+  ggplot(aes(x = reorder(ABLG, order), y = proportion, fill = group)) +
+  geom_bar(stat = "identity") +
+    facet_grid(rows = vars(sheet)) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, size = 8, vjust = 0.5, hjust = 0.95),
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.text.y = element_blank()
+  ) +
+   scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "midnightblue", "sienna", "slateblue", "darkorange", "purple4", "firebrick")) +
+  labs(title = "Sebastes alutus lcWGS GTseq ascertainment samples",
+       x = "ABLG sample",
+       y = "Proportion")
+
+
+ggsave("pdf_outputs/lcwgs_admixture_GTseq_ascertainment_samples.pdf", width = 12, height = 8)
+```
+
+Ok, so the admixed samples that should not have been included in the ascertainment panel are the following:
+
+661
+693
+3186
+722
+

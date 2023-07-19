@@ -2,7 +2,7 @@
 title: "02-POPMix-plates"
 author: "Diana Baetscher"
 date: "2023-03-10"
-output: html_document
+output: github_document
 ---
 
 ```{r setup, include=FALSE}
@@ -84,13 +84,83 @@ saveRDS(genos_long_explicit_NAs, file = "../data/processed/called_genos_na_expli
 ```
 
 ```{r}
-genos_long_explicit_NAs %>%
+loc_list <- genos_long_explicit_NAs %>%
   group_by(locus) %>%
   filter(!is.na(allele.balance)) %>%
   summarise(loc_depth = sum(depth)) %>%
-  arrange(desc(loc_depth))
+  arrange(desc(loc_depth)) %>%
+  select(locus)
 
 ```
+
+
+```{r compare-locs-fullrun1}
+fullrun1_locs <- read_csv("csv_outputs/test_fullrun1_loc_list.csv")
+
+loc_list %>%
+  inner_join(., fullrun1_locs)
+
+```
+
+
+Take a quick look at the metadata for the original plate: 2017_2019_1
+```{r}
+meta <- read_xlsx("../data/samples/POP_database_export_May2023.xlsx", sheet = "Sheet1")
+
+
+meta %>% head()
+test1 <- meta %>%
+  filter(ExtractionPlate == "POP2017_2019_01")
+
+ss_fullrun1 <- read_csv("../data/samplesheets/20230425_POP.csv", skip = 19)
+ss_fullrun1$Sample_ID <- as.numeric(ss_fullrun1$Sample_ID) # why are NAs introduced? Probably for the NTCs?
+
+pop4plates <- ss_fullrun1 %>%
+  left_join(., meta, by = c("Sample_ID" = "ABLG"))
+```
+
+```{r}
+library(ggplot2)
+library(sf)  
+library(rnaturalearth)
+library(rnaturalearthdata)
+```
+Yakutat location:
+59.5453° N, 139.7268° W
+
+
+
+```{r mapping-code}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+goa_map <- ggplot(data = world) +
+  geom_sf() +
+  coord_sf(xlim = c(-175, -125), 
+           ylim = c(62, 50), 
+           expand = FALSE) +
+  theme_bw()
+
+goa_map +
+  geom_jitter(data = test1, aes(x = StartLongitudeDD,y = StartLatitudeDD), size = 1, width = 0.3, height = 0.3, color = "dodgerblue") +
+  geom_jitter(data = pop4plates, aes(x = StartLongitudeDD,y = StartLatitudeDD), size = 1, width = 0.3, height = 0.3, color = "firebrick", alpha = 0.5) +
+  #scale_color_manual(values = c("darkred", "gold", "salmon", "darkorange", "dodgerblue", "lightblue", "midnightblue")) +
+  labs(x = "Longitude",
+       y = "Latitude") #+
+  # theme(
+  #   legend.text = element_text(face = "italic"),
+  #   axis.title.x = element_text(margin = margin(t = 10)),
+  #   axis.title.y = element_text(margin = margin(r = 10)),
+  # ) +
+ #  scale_y_continuous(breaks = c(56, 58, 60, 62)) +
+ #  scale_x_continuous(breaks = c(-155, -145)) +
+ #  guides(color = guide_legend(
+ #    override.aes = list(alpha = 1, size = 3), 
+ #    label.theme = element_text(size = 12, face = "italic"),
+ #    title.theme = element_text(size = 14)))
+
+```
+
+
 
 ## Locus evaluation
 
@@ -98,13 +168,13 @@ How many loci and how many alleles?
 
 ```{r}
 # alleles
-genos_long %>%
+genos_long_explicit_NAs %>%
   filter(!is.na(allele)) %>%
   select(locus, allele) %>%
   unique()
 
 # loci
-genos_long %>%
+genos_long_explicit_NAs %>%
   filter(!is.na(allele)) %>%
   select(locus, allele) %>%
   unique() %>%
@@ -114,9 +184,13 @@ genos_long %>%
 
   
 ```
-
-
 437 alleles across 140 loci with between 1-10 alleles per locus.
+
+
+```{r}
+
+```
+
 
 Missing data:
 
@@ -125,6 +199,7 @@ how many indiv?
 genos_long %>%
   select(gtseq_run, id) %>%
   unique
+
 ```
 286
 
@@ -143,7 +218,7 @@ genos_locs_filtered <- genos_long %>%
 
 ```
 
-
+8 loci with >50% missing data
 
 
 ```{r}

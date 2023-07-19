@@ -1,0 +1,157 @@
+---
+title: "04.0-read-in-rds-files"
+author: "Diana Baetscher"
+date: "2023-07-18"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The data included here consists of 7 MiSeq runs, for which samples were re-numbered, VCF files merged, and genotypes called using the "all_pop.vcf" file in microhaplot.
+UPDATE: the all_pop.vcf file was missing variants from some of the individual MiSeq runs and so I remade the merged VCF file. The new version is called "pop02_03_04_05_06_merged.vcf."
+
+
+We need to test the baseline for assignment using these haplotypes and then 
+
+
+Using the rds file output from microhaplot:
+1. read in rds files
+2. apply read depth filters
+3. apply allele balance filter
+
+Then,
+4. add metadata (ABLG number)
+5. check for duplicate samples 
+6. check for duplicate genotypes
+
+
+```{r load-libs-and-funcs}
+library(tidyverse)
+library(readxl)
+library(stringr)
+library(lubridate)
+
+
+# load functions
+source("../R/microhaplot-genos-funcs.R")
+
+```
+
+
+```{r read-in-genos}
+#### Call genos from the microhaplot rds files ####
+
+# this next step uses a little data frame that has the names and GTSeq run numbers
+# I got that file like this:
+# dsb:rds_files dianabaetscher$ pwd
+# /Users/dianabaetscher/Desktop/NOAA_grad/git-repos/rockfish-species-id/new_baseline_data/feather_files
+# dsb:feather_files dianabaetscher$ ls -l | awk 'BEGIN {print "gtseq_run", "file"} NR >1 && !/posinfo/ {num = $NF; gsub(/gtseq/, "", num); gsub(/[._].*$/, "", num);  print num, $NF}' > ../rds-file-list.txt 
+
+
+# get the names of the files
+fdf <- read.table("../data/merged-rds-file-list.txt", stringsAsFactors = FALSE, header = TRUE) %>%
+  tbl_df()
+dir <- "../data/rds_files/rds_files_new"
+
+
+# cycle over them, read them and add the gtseq_run column on each.
+# at the end, bind them together.
+genos_long <- lapply(1:nrow(fdf), function(i) {
+  message("Working on ", fdf$file[i])
+  call_genos_from_haplotRDS(path = file.path(dir, fdf$file[i])) %>%
+    mutate(gtseq_run = fdf$gtseq_run[i]) %>%
+    select(gtseq_run, everything())
+}) %>%
+  bind_rows()
+
+# we go ahead and save it in data/processed, with xz compression
+saveRDS(genos_long, file = "../data/processed/called_genos.rds", compress = "xz")
+
+
+#### In the end, let us get a data frame that includes genotypes for all the individuals  ####
+# and which explicitly has NAs in places where data are missing, and also 
+# has the NMFS_DNA_ID on there
+genos_long_explicit_NAs <- genos_long %>%
+  select(gtseq_run, id) %>%
+  unique() %>%
+  unite(col = gid, sep = "_", gtseq_run, id) %>%
+  select(gid) %>%
+  unlist() %>%
+  unname() %>%
+  expand.grid(gid = ., locus = unique(genos_long$locus), gene_copy = 1:2, stringsAsFactors = FALSE) %>%
+  tbl_df() %>% 
+  separate(gid, into = c("gtseq_run", "id"), convert = TRUE) %>%
+  left_join(., genos_long) %>%
+  arrange(gtseq_run, id, locus, gene_copy)
+
+# and then save that
+saveRDS(genos_long_explicit_NAs, file = "../data/processed/called_genos_na_explicit.rds", compress = "xz")
+  
+```
+
+### Add samplesheet/metadata/ABLG numbers
+
+Get the samplesheet info:
+```{r organize-samplesheets}
+# samplesheet info for all seven plates
+# list of files in samplesheets directory
+
+ss_data_all <- list.files(path = "../data/samplesheets/",  # Identify all CSV files
+                       pattern = "*.csv", full.names = TRUE) %>% 
+  lapply(read_csv, skip = 19) %>%                              # Store all files in list
+  bind_rows                                         # Combine data sets into one data set 
+
+# remove the non-POP data from samplesheets
+pop_ss <- ss_data_all %>%
+  filter(Sample_Project %in% c("POP", "POPMix")) %>%
+  mutate(Sample_ID = str_replace(Sample_ID, "ABLG", "")) # make the ABLG number consistently formatted
+
+```
+
+Take a quick look at the metadata:
+Avoid importing the full metadata unless something changes - this takes a while and throws a bunch of warnings.
+```{r organize-metadata}
+# meta data exported from the database
+#meta <- read_xlsx("../data/samples/POP_database_export_May2023.xlsx", sheet = "Sheet1")
+
+# narrow that down to just POP
+# pop <- meta %>%
+#   filter(SpeciesName == "Sebastes alutus")
+# # the ABLG number is currently numeric - fix that
+# pop$ABLG <- as.character(pop$ABLG)
+# 
+# pop %>% 
+#   write_rds("../data/POP_metadata.rds")
+
+pop <- read_rds("../data/POP_metadata.rds")
+
+
+# combine samplesheet and metadata info
+POP_meta_ss <- pop_ss %>%
+  left_join(., pop, by = c("Sample_ID" = "ABLG")) %>%
+  select(Sample_ID, Sample_Plate, id, gtseq_run, SpeciesName, StartLatitudeDD, StartLongitudeDD, EndLatitudeDD, EndLongitudeDD, CruiseID, HaulID, StationID, DepthM, LengthMM, DonatingLab)
+
+# now add the ABLG number onto the genos dataframe
+genos_ablg <- POP_meta_ss %>%
+  select(Sample_ID, id, gtseq_run) %>%
+  left_join(., genos_long_explicit_NAs) %>%
+  rename(ABLG = Sample_ID)
+
+# quick question:
+# do we have genotypes for samples with no metadata?
+# tmp1 <- POP_meta_ss %>%
+#   select(Sample_ID, id, gtseq_run)
+# 
+# genos_long_explicit_NAs %>%
+#   anti_join(., tmp1)
+
+
+genos_ablg %>%
+  write_rds("../data/processed/genos_ablg.rds")
+```
+
+From here, go to `04-all-samples-with-merged-vcf.Rmd`
+
+
