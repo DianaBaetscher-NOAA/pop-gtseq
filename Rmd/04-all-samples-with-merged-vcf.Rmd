@@ -34,6 +34,7 @@ library(tidyverse)
 library(readxl)
 library(stringr)
 library(lubridate)
+library(adegenet)
 # map packages
 library(ggplot2)
 library(sf)  
@@ -122,27 +123,40 @@ Avoid importing the full metadata unless something changes - this takes a while 
 # meta data exported from the database
 # meta <- read_xlsx("../data/samples/POP_database_export_May2023.xlsx", sheet = "Sheet1")
 # 
-# rockfish_meta <- meta %>% 
+# rockfish_meta <- meta %>%
 #   filter(SpeciesName == "Sebastes alutus" | Family == "Sebastidae" | Genus == "Sebastes" | str_detect(CommonName, "rockfish"))
-
-# narrow that down to just rockfish
+# 
+# # narrow that down to just rockfish
 # pop <- meta %>%
 #   filter(SpeciesName == "Sebastes alutus")
-# the ABLG number is currently numeric - fix that
+# #the ABLG number is currently numeric - fix that
 # rockfish_meta$ABLG <- as.character(rockfish_meta$ABLG)
-# 
+
+# fix some issues
 # rockfish_meta %>%
-#   write_rds("../data/rockfish_metadata.rds")
+#   mutate(DonatingLab = ifelse(DonatingLab %in% c("Gharrett", "Tony Gharret"), "Tony Gharrett", DonatingLab)) %>%
+#   write_csv("../data/rockfish_metadata.csv")
 
-pop <- read_rds("../data/rockfish_metadata.rds")
+```
 
+
+
+
+```{r organize-metadata}
+pop <- read_csv("../data/rockfish_metadata.csv")
+
+pop_ss$Sample_ID <- as.numeric(pop_ss$Sample_ID)
 # combine samplesheet and metadata info
 POP_meta_ss <- pop_ss %>%
   left_join(., pop, by = c("Sample_ID" = "ABLG")) %>%
   select(Sample_ID, Sample_Plate, id, gtseq_run, SpeciesName, StartLatitudeDD, StartLongitudeDD, EndLatitudeDD, EndLongitudeDD, CruiseID, HaulID, StationID, DepthM, LengthMM, DonatingLab, CollectionYear, CollectionMonth, CollectionDay) %>%
   mutate(CruiseID = str_replace(CruiseID, "-", ""))
 
+# formats
 POP_meta_ss$CruiseID <- as.numeric(POP_meta_ss$CruiseID)
+POP_meta_ss$CollectionYear <- as.numeric(POP_meta_ss$CollectionYear)
+POP_meta_ss$CollectionMonth <- as.numeric(POP_meta_ss$CollectionMonth)
+POP_meta_ss$HaulID <- as.numeric(POP_meta_ss$HaulID)
 
 # now add the ABLG number onto the genos dataframe
 # genos_ablg <- POP_meta_ss %>%
@@ -162,98 +176,15 @@ POP_meta_ss$CruiseID <- as.numeric(POP_meta_ss$CruiseID)
 # genos_ablg %>%
 #   write_rds("../data/processed/genos_ablg.rds")
 
-# formats
-POP_meta_ss$CollectionYear <- as.numeric(POP_meta_ss$CollectionYear)
-POP_meta_ss$CollectionMonth <- as.numeric(POP_meta_ss$CollectionMonth)
-POP_meta_ss$HaulID <- as.numeric(POP_meta_ss$HaulID)
-
-# add metadata for Tony's samples
-tony_meta_missing <- POP_meta_ss %>%
-  filter(DonatingLab == "Tony Gharrett") %>%
-  select(CollectionYear, CollectionMonth, CollectionDay, StartLatitudeDD, StartLongitudeDD, CruiseID, HaulID, StationID, DepthM, LengthMM, DonatingLab) %>%
-  unique() #%>%
-  #mutate(CruiseID = str_replace(CruiseID, "-", ""))
-
-#tony_meta_missing$CruiseID <- as.numeric(tony_meta_missing$CruiseID)
-
 ```
-
-
-What about for the samples for which I have depth data?
-
-Read in additional metadata from bottom trawl surveys
-```{r bottom-trawl-metadata}
-# I exported this from the very helpful fisheries one-stop shop online
-bt_meta <- read_csv("../data/FOSS_bottomTrawl_haulData.csv") %>%
-  select(Year, Cruise, Haul, Station, `Latitude Dd`, `Longitude Dd`, `Depth M`) %>%
-  mutate(StartLatitudeDD = round(`Latitude Dd`, 2)) %>%
-  mutate(StartLongitudeDD = round(`Longitude Dd`, 2))
-
-tony_fixed_meta <- tony_meta_missing %>%
-  left_join(., bt_meta, by = c("CollectionYear" = "Year", "HaulID" = "Haul", "StartLatitudeDD", "StartLongitudeDD")) %>%
-  mutate(StationID = ifelse(StationID == "---", Station, StationID)) %>%
-  mutate(DepthM = ifelse(DepthM == "0" | is.na(DepthM), `Depth M`, DepthM))
-
-tony_fixed_meta %>%
-  inner_join(., POP_meta_ss) %>%
-  filter(!is.na(DepthM))
-
-
-POP_meta_ss %>%
-  filter(is.na(DepthM) | DepthM == 0) %>%
-  filter(SpeciesName == "Sebastes alutus") %>%
-  group_by(CruiseID, HaulID, StationID, CollectionYear, DonatingLab, StartLatitudeDD, StartLongitudeDD) %>%
-  tally() %>%
-  arrange(CollectionYear) %>%
-  filter(DonatingLab != "SWFSC")
-
-
-```
-additional metadata for SWFSC samples? Maybe not critical because they're basically all B4 type.
-
-```{r}
-bt_meta %>%
-  filter(Year == 2000)
-
-# begin adding in the fixed metadata
-POP_meta_ss %>%
-  mutate(DepthM = ifelse(CollectionYear == 1999 & CruiseID == 199901 & HaulID == 293, 274, DepthM))
-
-
-```
-Some of this data matches up and some doesn't with the bottom trawl. I don't love that.
-
-
-
-
-
-```{r bottom-trawl-metadata}
-bt_meta_for_genos <- POP_meta_ss %>%
-  inner_join(., bt_meta, by = c("CollectionYear" = "Year", "HaulID" = "Haul", "StationID" = "Station"))
-
-bt_meta_for_genos
-
-mix_assign_w_meta$HaulID <- as.numeric(mix_assign_w_meta$HaulID)
-
-pop_mix_assigned_meta <- mix_assign_w_meta %>%
-  left_join(., bt_meta_for_genos) %>%
-  mutate(DepthM = ifelse(!is.na(`Depth M`), `Depth M`, DepthM))
-
-# how many samples with depth info now?
-mix_assign_w_meta %>%
-  filter(!is.na(DepthM)) %>%
-  filter(DonatingLab == "Tony Gharrett" & DepthM == 0) %>% # can I find more metadata for these based on lat/lon or cruise and haul?
-  left_join(., bt_meta, by = c("CruiseID" = "Cruise", "HaulID" = "Haul"))
-
-```
-
-
-
 
 
 
 ```{r read-in-genos}
-genos_ablg <- read_rds("../data/processed/genos_ablg.rds")
+genos_ablg <- read_rds("../data/processed/genos_ablg.rds") %>%
+  filter(!str_detect(ABLG, "NTC"))
+# make numeric to match the Sample_ID
+genos_ablg$ABLG <- as.numeric(genos_ablg$ABLG)
 ```
 
 
@@ -391,7 +322,7 @@ locs_to_toss_first <- geno_one_each %>%
 ```
 742 alleles across 167 loci with between 1-46 alleles per locus. Clearly the 46 needs to be removed!!
 
-Three of the loci are monomorphic.
+5 of the loci are monomorphic.
 
 
 ```{r toss-the-monomorphic-loci}
@@ -403,16 +334,9 @@ genos_no_monomorphic <- geno_one_each %>%
 ```
 Take a look at the overall dataset.
 
-```{r}
-genos_no_monomorphic %>%
-  ggplot(aes(x = reorder(locus, depth), y = ABLG, fill = log(depth))) +
-  geom_tile()
-
-```
-
 What about the average depth across loci?
 
-```{r}
+```{r plot-depth-per-locus}
 genos_no_monomorphic %>%
   group_by(locus) %>%
   mutate(avg_depth = mean(depth, na.rm = TRUE)) %>%
@@ -436,7 +360,7 @@ genos_locs_filtered <- genos_no_monomorphic %>%
   anti_join(., locs_to_toss)
 
 ```
-31 loci with >50% missing data***
+26 loci with >50% missing data***
 
 ***at some point, it would be interesting to return to this if the B4 population has higher rates of missing data (because of divergence).
 
@@ -459,7 +383,7 @@ genos_locs_filtered %>%
   arrange(desc(n))
 
 ```
-134 loci, 600 alleles
+136 loci, 605 alleles
 
 
 ```{r}
@@ -536,7 +460,7 @@ genos_locs_ind_filtered %>%
 
 Take a look at that dataset
 
-```{r}
+```{r plot-cleaned-genos}
 genos_locs_ind_filtered  %>%
   ggplot(aes(x = reorder(locus, depth), y = reorder(ABLG, depth), fill = log10(depth))) +
   geom_tile()
@@ -582,17 +506,6 @@ There are two ways to analyze these data:
 1) identifying groups (PCA) without regard to baseline samples/assignment
 2) using the baseline samples for which we have lcWGS data to then do assignment of the rest of the samples.
 
-Quick look at missing data samples on the map:
-```{r}
-goa_map +
-  geom_jitter(data = inds_missing_data_meta, aes(x = StartLongitudeDD,y = StartLatitudeDD), size = 1, alpha = 0.3, height = 0.2, width = 0.2, color = "darkblue") +
-  labs(x = "Longitude",
-       y = "Latitude",
-       title = "samples removed with missing data")
-
-```
-
-
 
 
 # Taking data through to a PCA
@@ -631,12 +544,16 @@ Read in some metadata to take a closer look at those samples/assignments.
 # read in metadata for POP gtseq3 run with group designations
 # these 335 individuals are those retained from the lcWGS dataset after filtering
 pops_known <- read_csv("../data/pop_335_population_assignment.csv") %>%
-  mutate(ABLG = str_replace(ABLG, "ABLG", "")) %>% # fix the syntax for matching up with the database/metadata 
+  mutate(ABLG = str_replace(ABLG, "ABLG", "")) 
+
+pops_known$ABLG <- as.numeric(pops_known$ABLG)
+
+pops_known1 <- pops_known %>% # fix the syntax for matching up with the database/metadata 
   left_join(., POP_meta_ss, by = c("ABLG" = "Sample_ID")) %>% # add samplesheet/metadata info
   rename(INDIVIDUALS = ABLG)
 
 # just the group assignments
-pop_grps <- pops_known %>%
+pop_grps <- pops_known1 %>%
   select(INDIVIDUALS, pop_assign) %>%
   rename(grp = pop_assign) %>%
   filter(INDIVIDUALS != "NA_NA")
@@ -655,7 +572,6 @@ long_df_w_grps %>%
   tally()
 
 ```
-
 
 ```{r all-samples-pca}
 # reformat genotypes for genind conversion
@@ -734,18 +650,6 @@ baseline <- long_df_w_grps %>%
 ```
 It seems like C might be admixed between A and D, which is why there are samples that were assigned to the A and D clusters in the lcWGS data now in C. Admixture analysis would tell us more. Harder to say what's going on with the B clusters.
 
-Ok, and finally, what about the B groups (i.e., not A, C, and D)
-
-```{r}
-# B_groups <- long_df_w_grps %>%
-#   filter(!STRATA %in% c("A", "C", "D", "POP"))
-# 
-# convert_to_genind_pca(B_groups, "POP_B_groups")
-```
-
-I'm not convinced we have the resolution for those...
-
-
 Go sleuthing a bit more on the baseline question and missing data issues.
 
 ```{r explore-missing-data-w-metadata-context}
@@ -813,13 +717,6 @@ goa_map +
 ggsave("pdf_outputs/POP_baseline_group_distribution_panels.pdf", width = 10, height = 7)
 ```
 
-
-```{r quick-look-at-weird-B2-sample}
-grps_for_map %>%
-  filter(grp == "B2") %>%
-  filter(StartLatitudeDD < 45)
-
-```
 Some notes:
 B4 appears exclusively SE of Yakutat, and is the only group found in the lower 48 with the exception of one B2 sample in Northern CA.
 B1 is distributed throughout the central GOA.
@@ -827,7 +724,7 @@ B1 is distributed throughout the central GOA.
 Laura mentioned that at the time the GTseq panel was developed, the four separate B groups were not clear and so were not targeted for differentiation using these markers.
 
 
-Looking back at Laura's slides covering the wGS dataset, not all of the individuals were adults...
+Looking back at Laura's slides covering the WGS dataset, not all of the individuals were adults...
 
 ```{r small-sizes}
 # we know that juveniles might be distributed differently
@@ -878,9 +775,9 @@ meta_for_strata <- POP_meta_ss %>%
 baseline_meta <- grps_for_map %>%
    left_join(., meta_for_strata)
   
-baseline_meta %>%
-  filter(DonatingLab == "Jacek Maselko") %>%
-  filter(CruiseID == "201901")
+# baseline_meta %>%
+#   filter(DonatingLab == "Jacek Maselko") %>%
+#   filter(CruiseID == "201901")
 
 ```
 
@@ -892,10 +789,13 @@ Read in the YOY IDs that were used to define group membership for the lcWGS data
 yoy <- read_xlsx("../data/Jacek_YOY_for_lcWGS_define_groups.xlsx") %>%
   mutate(ABLG = str_replace(ABLG, "ABLG", ""))
 
+yoy$ABLG <- as.numeric(yoy$ABLG)
+
 YOY_baseline <- yoy %>%
   left_join(., baseline_meta, by = c("ABLG" = "Sample_ID")) %>%
-  select(ABLG, INDIVIDUALS, pop_assign, grp) %>%
-  left_join(long_df_w_grps) %>%
+  select(ABLG, pop_assign, grp) %>%
+  left_join(long_df_w_grps, by = c("ABLG" = "INDIVIDUALS")) %>%
+  rename(INDIVIDUALS = ABLG) %>%
   select(INDIVIDUALS, MARKERS, GT, pop_assign) %>%
   rename(STRATA = pop_assign)
 ```
@@ -903,9 +803,9 @@ YOY_baseline <- yoy %>%
 Compare depth distributions for samples in groups A and D:
 
 How many total samples per group?
-```{r}
+```{r non-YOY-samples-per-group}
 baseline_meta %>%
-  anti_join(., YOY_baseline) %>%
+  anti_join(., YOY_baseline, by = c("Sample_ID" = "INDIVIDUALS")) %>%
   group_by(grp) %>%
   mutate(B = ifelse(grp %in% c("B1", "B2", "B3", "B4"), "B groups", "A, C, D groups")) %>%
   filter(!is.na(DepthM)) %>%
@@ -924,7 +824,7 @@ Kind of amazing to see the potential depth segregation. Take a closer look at A,
 
 ```{r depth-distribution-by-group}
 p <- baseline_meta %>%
-  anti_join(., YOY_baseline) %>%
+  anti_join(., YOY_baseline, by = c("Sample_ID" = "INDIVIDUALS")) %>%
   group_by(grp) %>%
   mutate(B = ifelse(grp %in% c("B1", "B2", "B3", "B4"), "B groups", "A, C, D groups")) %>%
   filter(!is.na(DepthM)) %>%
@@ -951,6 +851,8 @@ p + geom_boxplot(width=0.1, color = "black") +
 ggsave("pdf_outputs/pop_grp_depth_dist.pdf")
 
 ```
+The deepest samples are from Jacek's 2019 collections.
+
 
 ### Size distributions
 
@@ -967,7 +869,7 @@ l <- baseline_meta %>%
   theme_bw() +
   labs(x = "Sebastes alutus, genetic group",
        y = "Length (mm)",
-       title = "Sebastes alutus, collection length by genetic group") +
+       title = "Sebastes alutus, length by genetic group") +
   theme(
     axis.title.x = element_text(margin = margin(t = 10)),
     axis.title.y = element_text(margin = margin(r = 10))
@@ -987,33 +889,6 @@ ggsave("pdf_outputs/pop_grp_length_dist.pdf")
 NOTE: I need to think critically about whether a cohort effect could cause the pop structure that we're seeing... my gut reaction is no, but then again, these are long-lived highly fecund marine species.
 
 
-```{r depth-genetic-groups-space}
-depth_cohort <- baseline_meta %>%
-  anti_join(., YOY_baseline) %>%
-  group_by(grp) %>%
-  filter(!is.na(DepthM)) %>%
-  filter(DepthM > 200 & DepthM < 250) %>%
-  filter(grp %in% c("A", "C", "D")) %>% # just these groups
-    filter(LengthMM > 220)
-  
-  
-goa_map +
-  geom_jitter(data = depth_cohort, aes(x = StartLongitudeDD,y = StartLatitudeDD, color = grp), size = 3, alpha = 0.7, height = 0.2, width = 0.2) 
-  labs(x = "Longitude",
-       y = "Latitude",
-       title = "Sebastes alutus depth cohort test \n Depth = 200-250 m") +
-  scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
-  theme(
-    axis.text = element_text(size = 8),
-    axis.title.x = element_text(margin = margin(t = 10)),
-    axis.title.y = element_text(margin = margin(r = 10))
-  )
-
-ggsave("pdf_outputs/depth_cohort_test.pdf")
-```
-
-
-
 
 # GTseq ascertainment panel from lcWGS
 
@@ -1024,6 +899,8 @@ Laura gave me the file that included the samples that were used to identify grou
 ```{r inds-for-panel-design}
 gtseq_panel_pops <- read_xlsx("../data/pop_167_grps_used_for_GTseq_design.xlsx") %>%
   mutate(ABLG = str_replace(ABLG, "ABLG", ""))
+
+gtseq_panel_pops$ABLG <- as.numeric(gtseq_panel_pops$ABLG)
 
 ```
 I removed duplicates earlier in the workflow.
@@ -1332,7 +1209,7 @@ Heterozygosity deficit likely due to population structure.
 
 ## Admixture results from lcWGS data
 
-From Laura Timm
+Analyses output from Laura Timm. 
 
 
 ```{r read-in-multiple-sheets-admixture-from-lcWGS}
@@ -1398,6 +1275,8 @@ ggsave("pdf_outputs/admix_grps_A_B.pdf", width = 10, height = 6)
 
 
 ```{r subset-to-the-ascertainment-samples}
+gtseq_panel_pops$ABLG <- as.character(gtseq_panel_pops$ABLG)
+
 admix_df %>%
   inner_join(., gtseq_panel_pops, by = "ABLG") %>%
   rename(pop_assign = pop_assign.x) %>%
@@ -1524,19 +1403,12 @@ Assuming my hypothesis about admixture is correct, let's set up the analysis for
 
 Look at mixture samples:
 ```{r mixture-samples-PCA}
+admixed_to_remove$ABLG <- as.numeric(admixed_to_remove$ABLG)
+
 mix_grps_for_pca <- long_df_w_grps %>%
   anti_join(., admixed_to_remove, by = c("INDIVIDUALS" = "ABLG")) %>%
   mutate(STRATA = ifelse(str_detect(STRATA, "B"), "B", STRATA))
 
-# quick look at distribution of mixture samples
-#convert_to_genind_pca(mix_grps_for_pca, "mixture_plus_BASEv2")
-
-# and remove the identity of the groups to just visualize the clusters
-# baseline_test <- baseline %>%
-#   mutate(STRATA = "pop")
-#
-#
-# convert_to_genind_pca(baseline_test, "Baseline_no_groups")
 ```
 
 
@@ -1545,6 +1417,7 @@ mix_grps_for_pca <- long_df_w_grps %>%
 
 
 ```{r baseline-samples-for-rubias}
+alle_idxs$ABLG <- as.character(alle_idxs$ABLG)
 # beginning with the alleles for the full dataset
 # format for rubias
 reference <- alle_idxs %>%
@@ -1710,8 +1583,14 @@ Something funky with
 
 ```{r}
 # meta data for those?
-POP_meta_ss %>%
+outl <- POP_meta_ss %>%
   filter(Sample_ID %in% c("18470", "18478", "18450"))
+```
+
+```{r map-the-outliers}
+goa_map +
+  geom_point(data = outl, aes(x = StartLongitudeDD, y = StartLatitudeDD))
+
 ```
 
 
@@ -1794,16 +1673,24 @@ ggsave("pdf_outputs/mixture_samples_w_gtseq_grps_PC1_PC2.pdf", width = 8, height
 
 From there, we could use the rubias results to take a quick look at the B groups separately from the A,C,D groups to see if we have more resolution in this GTseq panel.
 
+Three samples have a PofZ < 0.9. 
 ```{r pca-mixture-samples-just-b-groups}
 rubias_ind_assign <- indiv_assignments %>%
+  filter(PofZ > 0.9) %>% # remove the samples that have a low PofZ
+  filter(z_score > -3) %>%
   select(indiv, repunit)
 
+
+pca_df_for_conversion$INDIVIDUALS <- as.character(pca_df_for_conversion$INDIVIDUALS)
 # add the rubias assignments on
 mix_df_for_genind_w_assignments <- pca_df_for_conversion %>%
-  left_join(., rubias_ind_assign, by = c("INDIVIDUALS" = "indiv")) %>%
-  mutate(STRATA = ifelse(STRATA == "POP", repunit, STRATA)) %>%
-  filter(STRATA != "POP") %>%
+  left_join(., rubias_ind_assign, by = c("INDIVIDUALS" = "indiv")) %>% 
+  filter(!is.na(repunit)) %>%
+  mutate(STRATA = repunit) %>%
+  #filter(STRATA != "POP") %>%
   select(-repunit)
+
+mix_df_for_genind_w_assignments$STRATA <- as.factor(mix_df_for_genind_w_assignments$STRATA)
 
 # use the radiator package to convert to a genind object
 pca_admix_genind_assigned <- write_genind(mix_df_for_genind_w_assignments)
@@ -1846,8 +1733,10 @@ How much metadata do we have for the mixture samples and can we use those rubias
 
 
 ```{r metadata-for-mixture-samples}
+POP_meta_ss$Sample_ID <- as.character(POP_meta_ss$Sample_ID)
 mix_assign_w_meta <- indiv_assignments %>%
   filter(PofZ > 0.9) %>% # only three individuals with < 90% assignment probability.
+  filter(z_score > -3) %>% # funky low z-scores should be removed
   select(indiv, collection) %>%
   left_join(., POP_meta_ss, by = c("indiv" = "Sample_ID"))
 
@@ -1865,7 +1754,6 @@ goa_map +
     axis.title.y = element_text(margin = margin(r = 10))
   )
   
-  
 ```
 
 So far so good. What about missing metadata for those samples?
@@ -1874,53 +1762,52 @@ So far so good. What about missing metadata for those samples?
 mix_assign_w_meta %>%
   filter(is.na(DepthM)) %>%
   ungroup() %>%
-  select(StartLatitudeDD, StartLongitudeDD, HaulID, StationID, DonatingLab) %>%
-  unique()
+  group_by(CollectionYear, StartLatitudeDD, StartLongitudeDD, HaulID, StationID, DonatingLab) %>%
+  tally()
 
 # missing depth for most of the samples. Can we track it down from the Haul/StationID?
 
 
 ```
-
-Ok, I'm trying to track down info for 53 unique lat/lon/haul/station/lab batches. That seems more manageable. Although it wasn't in the POP metadata from Tony that I had in emails. Perhaps that will take an ask to Tony with the specifics.
+These are the remaining hauls for which I wasn't able to find Depth metadata - either on the hard copy metadata that Tony provided or in the RACE/GAP AFSC database for bottom trawl.
 
 What about for the samples for which I have depth data?
 
 Read in additional metadata from bottom trawl surveys
 ```{r bottom-trawl-metadata}
-# I exported this from the very helpful fisheries one-stop shop online
-bt_meta <- read_csv("../data/FOSS_bottomTrawl_haulData.csv")
-POP_meta_ss$CollectionYear <- as.numeric(POP_meta_ss$CollectionYear)
-POP_meta_ss$HaulID <- as.numeric(POP_meta_ss$HaulID)
-
-bt_meta_for_genos <- POP_meta_ss %>%
-  inner_join(., bt_meta, by = c("CollectionYear" = "Year", "HaulID" = "Haul", "StationID" = "Station"))
-
-bt_meta_for_genos
-
-mix_assign_w_meta$HaulID <- as.numeric(mix_assign_w_meta$HaulID)
-
-pop_mix_assigned_meta <- mix_assign_w_meta %>%
-  left_join(., bt_meta_for_genos) %>%
-  mutate(DepthM = ifelse(!is.na(`Depth M`), `Depth M`, DepthM))
-
-# how many samples with depth info now?
-mix_assign_w_meta %>%
-  filter(!is.na(DepthM)) %>%
-  filter(DonatingLab == "Tony Gharrett" & DepthM == 0) %>% # can I find more metadata for these based on lat/lon or cruise and haul?
-  left_join(., bt_meta, by = c("CruiseID" = "Cruise", "HaulID" = "Haul"))
-
+# # I exported this from the very helpful fisheries one-stop shop online
+# bt_meta <- read_csv("../data/FOSS_bottomTrawl_haulData.csv")
+# POP_meta_ss$CollectionYear <- as.numeric(POP_meta_ss$CollectionYear)
+# POP_meta_ss$HaulID <- as.numeric(POP_meta_ss$HaulID)
+# 
+# bt_meta_for_genos <- POP_meta_ss %>%
+#   inner_join(., bt_meta, by = c("CollectionYear" = "Year", "HaulID" = "Haul", "StationID" = "Station"))
+# 
+# bt_meta_for_genos
+# 
+# mix_assign_w_meta$HaulID <- as.numeric(mix_assign_w_meta$HaulID)
+# 
+# pop_mix_assigned_meta <- mix_assign_w_meta %>%
+#   left_join(., bt_meta_for_genos) %>%
+#   mutate(DepthM = ifelse(!is.na(`Depth M`), `Depth M`, DepthM))
+# 
+# # how many samples with depth info now?
+# mix_assign_w_meta %>%
+#   filter(!is.na(DepthM)) %>%
+#   filter(DonatingLab == "Tony Gharrett" & DepthM == 0) %>% # can I find more metadata for these based on lat/lon or cruise and haul?
+#   left_join(., bt_meta, by = c("CruiseID" = "Cruise", "HaulID" = "Haul"))
+# 
 
 ```
 
 
 
-```{r}
-p1 <- pop_mix_assigned_meta %>%
+```{r plot-depths-for-mixture-assignments}
+p1 <- mix_assign_w_meta %>%
   group_by(collection) %>%
   filter(!is.na(DepthM)) %>%
   filter(DepthM != 0) %>%
-    filter(LengthMM > 220) %>% # this is the 50% age at maturity, according to Love et al.
+    #filter(LengthMM > 220) %>% # this is the 50% age at maturity, according to Love et al. Mostly, LengthMM is NA
   ggplot(aes(x = collection, y = DepthM, color = collection)) +
   geom_violin() +
   #facet_grid(cols = vars(B), scales = "free") +
@@ -1941,22 +1828,29 @@ p1 + geom_boxplot(width=0.1, color = "black") +
 ggsave("pdf_outputs/pop_grp_depth_dist_rubias_assignments.pdf")
 
 ```
-Very few samples with depth info there, but the pattern holds between A and D for those that are present.
+Average depths for A vs. D?
+```{r average-depths-by-group}
+mix_assign_w_meta %>%
+  group_by(collection) %>%
+  filter(!is.na(DepthM)) %>%
+  filter(DepthM != 0) %>%
+  summarise(mean_depth = mean(DepthM))
 
-
-I need to see if I can track down more depth data based on the year/cruise/haul/station ID info.
-
-
-I couldn't find additional metadata, but at least I can still take a look at per-haul ratios by geography.
-
-```{r load-packages-for-scatterpie}
-library(scatterpie)
-
-
+# How many samples per?
+mix_assign_w_meta %>%
+  group_by(collection) %>%
+  tally()
+  
 ```
 
 
-```{r}
+### Mixtures by haul
+
+
+
+```{r haul-proportions}
+bt_meta <- read_csv("../data/HAUL_DATA.csv")
+
 hauls <- mix_assign_w_meta %>%
   left_join(., POP_meta_ss) %>%
   group_by(HaulID, StationID, StartLatitudeDD, StartLongitudeDD, DonatingLab, CollectionYear, CollectionMonth, CollectionDay) %>%
@@ -1966,18 +1860,15 @@ hauls <- mix_assign_w_meta %>%
   unite(CollectionYear, CollectionMonth, CollectionDay, col = "SampleDate", sep = "_", remove = F) %>%
   group_by(HaulID, StationID, SampleDate, StartLatitudeDD, StartLongitudeDD) %>%
   rowid_to_column("haul") %>%
-  left_join(., mix_assign_w_meta) 
+  left_join(., mix_assign_w_meta) %>%
+  left_join(., bt_meta, by = c("CollectionYear" = "Year", "CruiseID" = "Cruise", "HaulID" = "Haul", "StationID" = "Station")) #%>%
+  # mutate(location = ifelse(StartLatitudeDD < 50), "south", NA) %>%
+  # mutate(location = ifelse(StartLatitudeDD >))
   
-
-# map
-# goa_map +
-#   geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, color = collection, r = multiplier*6), 
-#                    data = hauls, cols = )) +
-  #geom_jitter(data = hauls, aes(x = StartLongitudeDD,y = StartLatitudeDD, color = collection), size = 1, alpha = 0.5, height = 0.2, width = 0.2) +
-  #facet_wrap(~collection) +
-  labs(x = "Longitude",
-       y = "Latitude",
-       title = "Sebastes alutus mixture samples - rubias group assignments from GTseq panel") +
+hauls %>%
+  ggplot(aes(x = haul, fill = collection)) +
+  geom_bar(stat = "count") +
+  theme_bw() +
   scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
   theme(
     axis.text = element_text(size = 8),
@@ -1985,9 +1876,334 @@ hauls <- mix_assign_w_meta %>%
     axis.title.y = element_text(margin = margin(r = 10))
   )
 
-# geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, color = collection, r = multiplier*6), 
-#                   data = hauls, cols = colnames(final_data[,c(2:11)]))
 
+```
+
+
+```{r load-packages-for-scatterpie}
+library(scatterpie)
+
+for_plotting <- hauls %>%
+  ungroup() %>%
+  select(haul, indiv, StartLatitudeDD, StartLongitudeDD, collection) %>%
+  group_by(haul) %>%
+  add_tally(name = "n_haul") %>%
+  group_by(haul, collection) %>%
+  add_tally(name = "n_grp_haul") %>%
+  select(-indiv) %>% # summarise over hauls
+  unique() %>%
+  mutate(grp_prop = n_grp_haul/n_haul) %>%
+  select(-n_haul, -n_grp_haul) %>%
+  pivot_wider(names_from = collection, values_from = grp_prop) %>%
+  group_by(haul) %>%
+  replace(is.na(.), 0)
+
+for_plotting$haul <- as.character(for_plotting$haul)
+
+for_plotting$haul <- as.factor(for_plotting$haul)
+```
+
+
+```{r load-packages-for-scatterpie}
+# map
+goa_map +
+  geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 1),
+                   data = for_plotting, cols = colnames(for_plotting[, c(4:7)]), alpha = 0.6) +
+  scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
+theme(
+  axis.text = element_text(size = 8),
+  axis.title.x = element_text(margin = margin(t = 10)),
+  axis.title.y = element_text(margin = margin(r = 10)),
+  legend.title = element_text(size = 8)
+) +
+  labs(title = "Bottom trawl proportions by genetic group", x = "Longitude", y = "Latitude",
+       fill = "genetic \n group")
+
+ggsave("pdf_outputs/haul_proportions.pdf", width = 6, height = 6)
+```
+
+```{r zoomed-in-map}
+goa_map_zoom <- ggplot(data = world) +
+  geom_sf() +
+  coord_sf(xlim = c(-179, -130), 
+           ylim = c(62, 50), 
+           expand = FALSE) +
+  theme_bw()
+
+goa_map_zoom +
+  geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.5),
+                   data = for_plotting, cols = colnames(for_plotting[, c(4:7)]), alpha = 0.5) +
+  scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
+theme(
+  axis.text = element_text(size = 8),
+  axis.title.x = element_text(margin = margin(t = 10)),
+  axis.title.y = element_text(margin = margin(r = 10)),
+  legend.title = element_text(size = 8)
+) +
+  labs(title = "Bottom trawl proportions by genetic group", x = "Longitude", y = "Latitude",
+       fill = "genetic \n group")
+
+```
+
+```{r}
+wgoa_west <- ggplot(data = world) +
+  geom_sf() +
+  coord_sf(xlim = c(-179, -140), 
+           ylim = c(62, 50), 
+           expand = FALSE) +
+  theme_bw()
+
+wgoa_west +
+  geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.5),
+                   data = for_plotting, cols = colnames(for_plotting[, c(4:7)]), alpha = 0.5) +
+  scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
+theme(
+  axis.text = element_text(size = 8),
+  axis.title.x = element_text(margin = margin(t = 10)),
+  axis.title.y = element_text(margin = margin(r = 10)),
+  legend.title = element_text(size = 8)
+) +
+  labs(title = "Bottom trawl proportions by genetic group", x = "Longitude", y = "Latitude",
+       fill = "genetic \n group")
+
+```
+
+If we think there's depth segregation, we should look at a bathymap.
+```{r kodiak-to-aleutians}
+wgoa_west <- ggplot(data = world) +
+  geom_sf() +
+  coord_sf(xlim = c(-181, -145), 
+           ylim = c(62, 50), 
+           expand = FALSE) +
+  theme_bw()
+
+wgoa_west +
+  geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.5),
+                   data = for_plotting, cols = colnames(for_plotting[, c(4:7)]), alpha = 0.6) +
+  scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
+theme(
+  axis.text = element_text(size = 8),
+  axis.title.x = element_text(margin = margin(t = 10)),
+  axis.title.y = element_text(margin = margin(r = 10)),
+  legend.title = element_text(size = 8)
+) +
+  labs(title = "Bottom trawl proportions by genetic group", x = "Longitude", y = "Latitude",
+       fill = "genetic \n group")
+  
+```
+
+
+
+```{r bathymap}
+library(marmap)
+
+aleu <- getNOAA.bathy(175, -145, 50, 65, resolution = 5,
+antimeridian = TRUE)
+
+goa_bathy <- getNOAA.bathy(175, -130, 45, 65, resolution = 3,
+antimeridian = TRUE)
+
+
+```
+
+The bathymap and the dataset are in different coordinate systems. Need to covert one to the other for plotting.
+Worth exploring some other options too:
+https://github.com/DataScienceHobart/2017-02-03-graphics-imas/issues/3
+https://mikkovihtakari.github.io/ggOceanMaps/articles/ggOceanMaps.html
+
+
+```{r}
+# get the longitude to line up between the bathy map and the dataset
+plot_df <- for_plotting %>%
+  mutate(lon = ifelse(StartLongitudeDD < 0, 360+StartLongitudeDD, 360-StartLongitudeDD)) %>%
+  mutate(lat = StartLatitudeDD) 
+
+autoplot.bathy(goa_bathy, geom = c("raster", "contour", alpha = 0.5), coast = T) +
+  scale_fill_etopo() +
+  geom_point(data = plot_df, aes(x = lon, y = lat),
+               colour = 'firebrick', size = 2, alpha = 0.9) +
+    labs(y = "Latitude", x = "Longitude", fill = "Elevation")
+
+```
+
+From there, I want to remove the detail from the land elevation and provide more detail about the hauls.
+
+```{r}
+str(goa_bathy)
+
+
+```
+
+
+New mapping approach:
+
+```{r}
+library(ggOceanMaps)
+library(ggspatial)
+
+```
+
+```{r using-ggOceanMaps}
+basemap(limits = c(175, -133, 50, 60), bathymetry = T, rotate = T) +
+  ggspatial::geom_spatial_point(data = plot_df, aes(x = lon, y = lat), color = "red")
+
+```
+
+Zoom in on the central GOA
+```{r format-df}
+haul_id_df <- hauls %>%
+  ungroup() %>%
+  select(haul, StartLatitudeDD, StartLongitudeDD, n, collection, DepthM, `Bottom Temperature C`, `Surface Temperature C`) %>%
+  rename(lat = StartLatitudeDD) %>%
+   mutate(lon = ifelse(StartLongitudeDD < 0, 360+StartLongitudeDD, 360-StartLongitudeDD)) %>%
+  group_by(haul, collection) %>%
+  add_tally(name = "n_grp_per_haul")
+  
+```
+
+
+always new stuff to learn here:
+https://r-graph-gallery.com/ggplot2-package.html
+
+```{r central-goa}
+central_goa <- basemap(limits = c(-155, -133, 53, 60), bathymetry = T, rotate = T) 
+
+central_goa +
+ ggspatial::geom_spatial_point(data = haul_id_df, aes(x = lon, y = lat, color = collection, size = n_grp_per_haul),
+                               geom = "jitter", width = 0.2, height = 0.2) +
+  scale_color_manual(values = c("darkorange", "firebrick", 
+                                "violet", "gold")) +
+  guides(color = guide_legend(override.aes = list(fill = NA)), size = guide_legend(override.aes = list(fill = NA))) +
+  theme(
+    legend.position = "right"
+  ) +
+  labs(color = "genetic group",
+       size = "N per haul",
+       title = "Central GOA, Sebastes alutus \ngenetic group assignments from haul data")
+    
+ggsave("pdf_outputs/centralGOA_haul_data.pdf", width = 8, height = 5)
+```
+
+For hauls < a certain depth, we would expect very few A group samples and dominanted by D group samples in the Aleutians/wGOA.
+
+Look more at the A vs. D relationship
+```{r aleutians-and-D-vs-A-groups}
+aleutians <- basemap(limits = c(175, -150, 50, 60), bathymetry = T, rotate = T) 
+
+aleutians +
+ ggspatial::geom_spatial_point(data = haul_id_df, aes(x = lon, y = lat, color = collection, size = n_grp_per_haul)) +
+  scale_color_manual(values = c("darkorange", "firebrick", 
+                                "violet", "gold")) +
+  guides(color = guide_legend(override.aes = list(fill = NA)), size = guide_legend(override.aes = list(fill = NA))) +
+  theme(
+    legend.position = "right",
+    legend.direction = "vertical",
+    legend.box = "horizontal"
+  ) +
+  labs(color = "genetic group",
+       size = "N per haul",
+       title = "Kodiak - Aleutians, Sebastes alutus \ngenetic group assignments from haul data")
+    
+
+ggsave("pdf_outputs/aleutians_haul_data.pdf", width = 10, height = 5)
+
+```
+
+Okay, okay. Enough with the maps for now. Let's look at composition of hauls that are shallower/deeper and how that matches up with presence/proportion of A/D group individuals.
+
+
+COME BACK AND MAKE FINAL MAPS.
+COME BACK AND FINISH EVALUATING THE DIFFERENCE IN DEPTH BETWEEN A & D.
+
+
+
+Test for a relationship between depth and proportion of D individuals?
+```{r depth-analysis}
+haul_id_df %>%
+  filter(collection %in% c("A", "D") & DepthM > 0) %>%
+  mutate(prop_D_haul = ifelse(collection == "D", n_grp_per_haul/n, NA)) %>%
+  mutate(prop_A_haul = ifelse(collection == "A", n_grp_per_haul/n, NA)) %>%
+  unique()  %>%
+  ggplot() +
+  geom_point(aes(x = DepthM, y = prop_D_haul)) +
+  theme_bw() +
+  labs(x = "Depth (m)",
+       y = "Proportion of genetic group D per haul")
+
+
+```
+
+histograms?
+```{r}
+haul_id_df %>% filter(DepthM > 0 & StartLongitudeDD < -150) %>%
+  #filter(collection %in% c("A", "D") & DepthM > 0) %>%
+  mutate(prop_per_haul = n_grp_per_haul/n) %>%
+  unique()  %>%
+  ggplot() +
+  #geom_bar(aes(x = DepthM, y = prop_per_haul, fill = collection), position = position_dodge2(preserve = "single"), stat = "identity", width = 10) +
+  geom_bar(aes(x = DepthM, y = prop_per_haul, fill = collection), position = "stack", stat = "identity", width = 10) +
+  theme_bw() +
+  #facet_grid(rows = vars(collection)) +
+  labs(x = "Depth (m)",
+       y = "Proportion of genetic group per haul",
+       fill = "Genetic group",
+       title = "Sebastes alutus depth distribution \nA vs. D groups") +
+  theme(
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+  )
+
+ggsave("pdf_outputs/depth_dist_A_vs_D_hauls.pdf", height = 4, width = 6)
+```
+
+
+```{r t-test-means-for-A-and-D-groups}
+t.test(x = D_haul$DepthM, y = A_haul$DepthM, alternative = c("two.sided"), mu = 47, paired = F)
+
+D_haul <- haul_id_df %>%
+   ungroup() %>%
+  filter(collection == "D") %>%
+  filter(!is.na(DepthM) & DepthM > 0) 
+
+A_haul <- haul_id_df %>%
+  ungroup() %>%
+  filter(collection == "A") %>%
+  filter(!is.na(DepthM) & DepthM > 0)
+
+haul_id_df %>%
+  ungroup() %>%
+  filter(!is.na(DepthM) & DepthM > 0) %>%
+  group_by(collection) %>%
+  summarise(mean_depth = mean(DepthM))
+
+242-195
+
+haul_df_for_stats <- haul_id_df %>%
+  mutate(prop_in_haul = n_grp_per_haul/n) %>%
+  filter(DepthM > 0)
+```
+sums of squares fct?
+explicitly deal with the fact that there are multiple samples from the same haul, random effect?? Not independent
+
+treat haul as the unit/replicate - sampling unit
+
+
+
+
+```{r}
+model1 <- glm(haul_df_for_stats$prop_in_haul ~ haul_df_for_stats$collection:haul_df_for_stats$DepthM, family = "binomial") # can use a binomial with proportion according to 
+
+
+summary(model1)
+```
+
+
+```{r}
+haul_df_for_stats %>%
+  filter(prop_in_haul > 0.5 & collection %in% c("A", "D")) %>%
+  ggplot(aes(x = DepthM, y = prop_in_haul, color = collection)) +
+  geom_point() +
+  geom_smooth(method = "lm")
 
 ```
 
