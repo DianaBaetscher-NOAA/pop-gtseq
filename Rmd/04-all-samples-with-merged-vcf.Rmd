@@ -47,7 +47,7 @@ source("../R/pca-funcs.R")
 ```
 
 
-```{r read-in-genos}
+```{r read-in-genos-loop}
 #### Call genos from the microhaplot rds files ####
 
 # this next step uses a little data frame that has the names and GTSeq run numbers
@@ -119,7 +119,7 @@ pop_ss <- ss_data_all %>%
 
 Take a quick look at the metadata:
 Avoid importing the full metadata unless something changes - this takes a while and throws a bunch of warnings.
-```{r organize-metadata}
+```{r full-metadata-import}
 # meta data exported from the database
 # meta <- read_xlsx("../data/samples/POP_database_export_May2023.xlsx", sheet = "Sheet1")
 # 
@@ -384,6 +384,16 @@ genos_locs_filtered %>%
 
 ```
 136 loci, 605 alleles
+```{r}
+genos_locs_filtered %>%
+  filter(!is.na(allele)) %>%
+  select(locus, allele) %>%
+  unique() %>%
+  group_by(locus) %>%
+  tally() %>%
+  summarise(median(n))
+```
+
 
 
 ```{r}
@@ -1445,13 +1455,14 @@ ref_two_col <- reference %>%
 ```
 
 
-```{r loo-output, eval=FALSE}
+```{r loo-output, eval=TRUE}
 loo_output <- rubias::assess_reference_loo(ref_two_col, gen_start_col = 5, return_indiv_posteriors = T, resampling_unit = "individual", mixsize = 100)
 
 ```
 
 
 ```{r plot-results-from-LOO}
+
 pop_loo_summary <- loo_output$mixing_proportions %>%
   group_by(iter, repunit) %>%
   summarise(true_repprop = sum(true_pi), 
@@ -1477,7 +1488,7 @@ ggplot(pop_loo_summary, aes(x = repu_n_prop, # Prop of ind. actually simulated
     axis.title.x = element_text(margin = margin(t = 10)),
     axis.title.y = element_text(margin = margin(r = 10)),
     axis.text = element_text(size = 7)
-  )
+  ) + scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue"))
 
 ggsave("pdf_outputs/loo_test_four_groups.pdf", width = 7, height = 3)
 ```
@@ -1746,7 +1757,7 @@ goa_map +
   facet_wrap(~collection) +
   labs(x = "Longitude",
        y = "Latitude",
-       title = "Sebastes alutus mixture samples - rubias group assignments from GTseq panel") +
+       title = "Sebastes alutus rubias group assignments from GTseq panel") +
   scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
   theme(
     axis.text = element_text(size = 8),
@@ -1754,6 +1765,7 @@ goa_map +
     axis.title.y = element_text(margin = margin(r = 10))
   )
   
+ggsave("pdf_outputs/GTseq_sample_distribution.pdf", width = 6, height = 6)
 ```
 
 So far so good. What about missing metadata for those samples?
@@ -1865,27 +1877,38 @@ hauls <- mix_assign_w_meta %>%
   # mutate(location = ifelse(StartLatitudeDD < 50), "south", NA) %>%
   # mutate(location = ifelse(StartLatitudeDD >))
   
+hauls$HaulID <- as.character(hauls$HaulID)
 hauls %>%
-  ggplot(aes(x = haul, fill = collection)) +
+  filter(!is.na(HaulID)) %>%
+   mutate(StartLongitudeDD = ifelse(StartLongitudeDD > 0, StartLongitudeDD*-1, StartLongitudeDD)) %>%
+  filter(!StartLongitudeDD == 0) %>%
+  ggplot(aes(x = reorder(HaulID, StartLongitudeDD), fill = collection)) +
   geom_bar(stat = "count") +
   theme_bw() +
-  scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
+  scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
   theme(
     axis.text = element_text(size = 8),
     axis.title.x = element_text(margin = margin(t = 10)),
-    axis.title.y = element_text(margin = margin(r = 10))
+    axis.title.y = element_text(margin = margin(r = 10)),
+    axis.text.x = element_text(angle = 45)
+  ) +
+  labs(
+    fill = "genetic \n group",
+    x = "Haul (ordered by west-to-east by longitude)",
+    y = "Number of samples in haul",
+    title = "Number of POP per genetic group per haul"
   )
 
-
+ggsave("pdf_outputs/POP_genetic_group_count_by_haul.pdf", width = 8, height = 6)
 ```
 
 
-```{r load-packages-for-scatterpie}
+```{r scatterpie-map}
 library(scatterpie)
 
 for_plotting <- hauls %>%
   ungroup() %>%
-  select(haul, indiv, StartLatitudeDD, StartLongitudeDD, collection) %>%
+  select(haul, indiv, StartLatitudeDD, StartLongitudeDD, collection, DepthM, CollectionYear) %>%
   group_by(haul) %>%
   add_tally(name = "n_haul") %>%
   group_by(haul, collection) %>%
@@ -1904,22 +1927,21 @@ for_plotting$haul <- as.factor(for_plotting$haul)
 ```
 
 
-```{r load-packages-for-scatterpie}
+```{r scatterpie-map1}
 # map
-goa_map +
-  geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 1),
-                   data = for_plotting, cols = colnames(for_plotting[, c(4:7)]), alpha = 0.6) +
-  scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
-theme(
-  axis.text = element_text(size = 8),
-  axis.title.x = element_text(margin = margin(t = 10)),
-  axis.title.y = element_text(margin = margin(r = 10)),
-  legend.title = element_text(size = 8)
-) +
-  labs(title = "Bottom trawl proportions by genetic group", x = "Longitude", y = "Latitude",
-       fill = "genetic \n group")
+# goa_map +
+#   geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 1),
+#                    data = for_plotting, cols = colnames(for_plotting[, c(6:9)]), alpha = 0.6) +
+#   scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
+# theme(
+#   axis.text = element_text(size = 8),
+#   axis.title.x = element_text(margin = margin(t = 10)),
+#   axis.title.y = element_text(margin = margin(r = 10)),
+#   legend.title = element_text(size = 8)
+# ) +
+#   labs(title = "Bottom trawl proportions by genetic group", x = "Longitude", y = "Latitude",
+#        fill = "genetic \n group")
 
-ggsave("pdf_outputs/haul_proportions.pdf", width = 6, height = 6)
 ```
 
 ```{r zoomed-in-map}
@@ -1932,16 +1954,20 @@ goa_map_zoom <- ggplot(data = world) +
 
 goa_map_zoom +
   geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.5),
-                   data = for_plotting, cols = colnames(for_plotting[, c(4:7)]), alpha = 0.5) +
-  scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
-theme(
+                   data = for_plotting, cols = colnames(for_plotting[, c(6:9)]), alpha = 0.5) +
+scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
+  #facet_wrap(~CollectionYear) +
+  theme(
   axis.text = element_text(size = 8),
   axis.title.x = element_text(margin = margin(t = 10)),
   axis.title.y = element_text(margin = margin(r = 10)),
   legend.title = element_text(size = 8)
 ) +
   labs(title = "Bottom trawl proportions by genetic group", x = "Longitude", y = "Latitude",
-       fill = "genetic \n group")
+       fill = "genetic \n group") 
+
+ggsave("pdf_outputs/haul_proportions.pdf", width = 12, height = 7)
+
 
 ```
 
@@ -1955,8 +1981,8 @@ wgoa_west <- ggplot(data = world) +
 
 wgoa_west +
   geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.5),
-                   data = for_plotting, cols = colnames(for_plotting[, c(4:7)]), alpha = 0.5) +
-  scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
+                   data = for_plotting, cols = colnames(for_plotting[, c(5:8)]), alpha = 0.5) +
+  scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
 theme(
   axis.text = element_text(size = 8),
   axis.title.x = element_text(margin = margin(t = 10)),
@@ -1966,31 +1992,90 @@ theme(
   labs(title = "Bottom trawl proportions by genetic group", x = "Longitude", y = "Latitude",
        fill = "genetic \n group")
 
+ggsave("pdf_outputs/pop_proportions_by_haul_west.pdf", width = 8, height = 6)
 ```
 
 If we think there's depth segregation, we should look at a bathymap.
 ```{r kodiak-to-aleutians}
 wgoa_west <- ggplot(data = world) +
   geom_sf() +
-  coord_sf(xlim = c(-181, -145), 
-           ylim = c(62, 50), 
+  coord_sf(xlim = c(-155, -142), 
+           ylim = c(61, 55), 
            expand = FALSE) +
   theme_bw()
 
 wgoa_west +
-  geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.5),
-                   data = for_plotting, cols = colnames(for_plotting[, c(4:7)]), alpha = 0.6) +
-  scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "darkorange","firebrick", "purple4")) +
-theme(
+  geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.2),
+                   data = for_plotting, cols = colnames(for_plotting[, c(6:9)]), alpha = 0.6) +
+scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
+  theme(
   axis.text = element_text(size = 8),
   axis.title.x = element_text(margin = margin(t = 10)),
   axis.title.y = element_text(margin = margin(r = 10)),
   legend.title = element_text(size = 8)
 ) +
-  labs(title = "Bottom trawl proportions by genetic group", x = "Longitude", y = "Latitude",
-       fill = "genetic \n group")
+  labs(title = "Genetic groups by haul near Kodiak/Kenai split", x = "Longitude", y = "Latitude",
+       fill = "genetic \n group") 
   
+
+ggsave("pdf_outputs/pop_proportions_by_haul_kodiak.pdf", width = 8, height = 6)
+
 ```
+
+### Depth by longitude
+
+```{r analyzing-depth-by-longitude}
+mix_assign_w_meta %>%
+  mutate(StartLongitudeDD = ifelse(StartLongitudeDD > 0, StartLongitudeDD*-1, StartLongitudeDD)) %>%
+  filter(!StartLongitudeDD == 0,
+         DepthM != 0) %>%
+  ggplot(aes(x = StartLongitudeDD, y = DepthM, color = collection)) +
+  geom_jitter(size = 1, alpha = 0.4, width = 1.5, height = 10) +
+  scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue")) +
+  theme_bw() +
+  labs(
+    x = "Longitude W",
+    y = "Depth (m)",
+    color = "genetic \n group",
+    title = "Genetic group by longitude and depth"
+  ) + annotate("text", x = -178, y = 390, label = "deep") +
+  annotate("segment", x = -178, xend = -178, y = 350, yend = 378, color = "black", arrow = arrow(length = unit(0.2, "cm"))) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1)))
+
+ggsave("pdf_outputs/genetic_group_ind_longitude_depth.pdf", width = 8, height = 6)
+```
+
+```{r with-pies}
+plot_pie_data <- for_plotting %>%
+   mutate(StartLongitudeDD = ifelse(StartLongitudeDD > 0, StartLongitudeDD*-1, StartLongitudeDD)) %>%
+  filter(!StartLongitudeDD == 0,
+         DepthM != 0)
+
+ggplot() +
+  geom_scatterpie(aes(x = StartLongitudeDD,y = DepthM/-10, r = 1),
+                   data = plot_pie_data, cols = colnames(for_plotting[, c(5:8)]), alpha = 0.6) +
+  scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
+  labs(title = "Haul proportions by genetic group, depth, longitude", 
+       x = "Longitude", 
+       y = "Bottom depth*10 (m)",
+       fill = "genetic \n group") +
+  theme_bw() +
+  theme(
+  axis.text = element_text(size = 8),
+  axis.title.x = element_text(margin = margin(t = 10)),
+  axis.title.y = element_text(margin = margin(r = 10)),
+  legend.title = element_text(size = 8)
+) +
+  annotate("text", x = -178, y = -37, label = "deep") +
+  annotate("segment", x = -178, xend = -178, y = -32, yend = -36, color = "black", arrow = arrow(length = unit(0.2, "cm"))) +
+  annotate("text", x = -174, y = -38, label = "west") +
+  annotate("segment", x = -165, xend = -172, y = -38, yend = -38, color = "black", arrow = arrow(length = unit(0.2, "cm")))
+
+
+ggsave("pdf_outputs/trawl_proportions_longitude_depth.pdf", width = 7, height = 5)
+```
+
+
 
 
 
@@ -2003,7 +2088,7 @@ antimeridian = TRUE)
 goa_bathy <- getNOAA.bathy(175, -130, 45, 65, resolution = 3,
 antimeridian = TRUE)
 
-
+kodiak_bathy <- getNOAA.bathy(-155, -142, 55, 62, resolution = 10)
 ```
 
 The bathymap and the dataset are in different coordinate systems. Need to covert one to the other for plotting.
@@ -2028,11 +2113,39 @@ autoplot.bathy(goa_bathy, geom = c("raster", "contour", alpha = 0.5), coast = T)
 
 From there, I want to remove the detail from the land elevation and provide more detail about the hauls.
 
-```{r}
-str(goa_bathy)
+```{r marmap-kodiak-area}
+dat_for_kodiak <- plot_pie_data %>%
+  filter(StartLongitudeDD < -141)
 
+# Creating a custom palette of blues
+blues <- c("lightsteelblue4", "lightsteelblue3",
+"lightsteelblue2", "lightsteelblue1")
 
+jpeg(filename = "pdf_outputs/kodiak_bathymetry_with_hauls.jpg", width = 8, height = 6, units = "in", res = 600)
+# Plotting the bathymetry with different colors for land and sea
+plot(kodiak_bathy, image = TRUE, land = TRUE, lwd = 0.1,
+bpal = list(c(0, max(kodiak_bathy), "grey"),
+c(min(kodiak_bathy),0,blues)))
+# Making the coastline more visible
+plot(kodiak_bathy, deep = 0, shallow = 0, step = 0,
+lwd = 0.4, add = TRUE)
+scaleBathy(kodiak_bathy, deg=1, x="bottomright", y = NULL, inset = 12)
+# add points
+points(dat_for_kodiak$StartLongitudeDD, dat_for_kodiak$StartLatitudeDD, pch = 21, col = "black", bg = "seagreen4", cex = 1.3)
+text(-153, 58, "Kodiak Is.", col = "black", font = 3)
+text(-150.5, 60, "Kenai Pen.", col = "black", font = 3)
+dev.off()
 ```
+
+
+```{r bathy-transect}
+trsect <- get.transect(kodiak_bathy, -155, 56, -150, 59, distance = T) # get transect near Kodiak
+plotProfile(trsect)
+```
+
+
+
+
 
 
 New mapping approach:
@@ -2047,6 +2160,9 @@ library(ggspatial)
 basemap(limits = c(175, -133, 50, 60), bathymetry = T, rotate = T) +
   ggspatial::geom_spatial_point(data = plot_df, aes(x = lon, y = lat), color = "red")
 
+
+basemap(limits = c(-155, -148, 50, 60), bathymetry = T, rotate = T) +
+  ggspatial::geom_spatial_point(data = plot_df, aes(x = lon, y = lat), color = "red")
 ```
 
 Zoom in on the central GOA
