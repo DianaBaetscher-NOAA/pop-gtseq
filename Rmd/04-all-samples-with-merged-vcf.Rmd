@@ -1927,6 +1927,31 @@ for_plotting$haul <- as.factor(for_plotting$haul)
 ```
 
 
+```{r haul-size-by-group}
+hauls %>%
+  group_by(haul, collection) %>%
+  tally() %>%
+  group_by(haul) %>%
+  mutate(haul_size = sum(n)) %>%
+  ungroup() %>% 
+  ggplot(aes(x = reorder(haul, haul_size), y = n, fill = collection)) +
+  geom_bar(stat = "identity") +
+  theme_bw() +
+   scale_fill_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue"))
+  
+# sizes/lengths
+# pull info about haul years
+hauls %>%
+  ungroup() %>%
+  group_by(CollectionYear, CruiseID) %>%
+  tally() %>%
+  arrange(CollectionYear)
+```
+Even if I can't get individual length data for every fish, I could get length data per haul and then look at the hauls that are >90% one form...
+
+
+
+
 ```{r scatterpie-map1}
 # map
 # goa_map +
