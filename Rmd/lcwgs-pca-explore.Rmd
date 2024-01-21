@@ -1,0 +1,379 @@
+---
+title: "lcwgs-pca-exploration"
+author: "diana baetscher"
+date: "2024-01-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Reading in .cov files that Laura Timm generated and playing with different PCAs for my AMSS presentation.
+
+
+```{r}
+######################################
+### INSTALL PACKAGES & LOAD FUNCTIONS
+packages_needed <- c("ggplot2", "plotly", "ggpubr", "tidyverse")
+
+for(i in 1:length(packages_needed)){
+  if(!(packages_needed[i] %in% installed.packages())){install.packages(packages_needed[i])}
+  library(packages_needed[i], character.only = TRUE)
+}
+
+g_legend <- function(myggplot){
+  tmp <- ggplot_gtable(ggplot_build(myggplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)
+}
+######################################
+
+```
+
+
+```{r}
+######################################
+## DIRECTORIES AND FILE NAMES
+DATADIR <- "../lcwgs_data/"
+BAM_LIST <- "SALU-7164_filtered_bamslist.txt"
+#SAMPLEMETADATA <- "BFALsamplePops.csv"
+#METADATA <- "fst_meta_data.txt"
+######################################
+```
+
+
+
+
+```{r}
+### Genome-wide PCA
+
+# read in the covariance matrix from pcangsd
+pca <- as.matrix(read.table("../lcwgs_data/SALU-7164-batch-q25_wholegenome-polymorphic.cov"))
+
+# compute eigenvalues from the covariance matrix
+pca_e <- eigen(pca)
+
+# extract the first three PCs
+first3pcs <- data.frame(pca_e$vectors[,1:3])
+dim(pca)
+
+# still need the identities of the 337 samples in the covariance matrix
+pca_df <- as.data.frame(first3pcs) %>%
+  rename(PC1 = X1, PC2 = X2, PC3 = X3)
+
+```
+
+```{r quick-plot}
+pca_df %>%
+  ggplot(aes(x = PC1, y = PC2)) +
+  geom_point() +
+  theme_bw()
+
+```
+
+That looks identical to Laura's. Let's see if we can add in some metadata - first for the samples from Jacek's study.
+
+```{r metadata-and-bamlist}
+bamlist <- read_tsv("../lcwgs_data/SALU-7164-batch-q25_filtered_bamslist.txt", col_names = F) %>%
+  separate(X1, c(NA, NA, NA, NA, NA, "file"), sep = "/") %>%
+  separate(file, into = c(NA, "ABLG", NA, NA, NA, NA), sep = "_")
+
+bamlist
+
+# metadata
+locs <- read_csv("../lcwgs_data/pop_locs.csv") %>%
+  select(-`...6`)
+
+grp_info <- locs %>%
+  mutate(original_pop = ifelse(Population == "larval-SEAK", pop_assign, NA)) %>%
+  mutate(original_pop = ifelse(str_detect(original_pop, "B"), "B", original_pop)) # Jacek only had four groups
+
+# add info to bamlist samples ***BAMLIST IS THE CANONICAL ORDER FOR THE PCA COVARIANCE MATRIX
+sample_ids <- bamlist %>%
+  left_join(., grp_info)
+  
+```
+```{r add-group-info-to-pcas}
+pca_w_meta <- sample_ids %>%
+  bind_cols(., pca_df)
+
+no_jacek <- pca_w_meta %>%
+  filter(is.na(original_pop))
+
+jacek <- pca_w_meta %>%
+  filter(!is.na(original_pop))
+
+# plot with Jacek's samples superimposed on lcWGS data
+  ggplot() +
+  geom_point(data = no_jacek, aes(x = PC1, y = PC2, color = original_pop), size = 1.5, alpha = 0.3) +
+  geom_point(data = jacek, aes(x = PC1, y = PC2, color = original_pop), size = 3.5, alpha = 0.7) +
+  theme_bw() +
+  scale_color_manual(values = c("darkcyan", 
+                                "deepskyblue", 
+                                "salmon", 
+                                "darkblue"),
+                                na.value = "gray70") +
+    labs(
+      color = "RAD-seq \ngenetic group",
+      x = "PC1 - 20.0%",
+      y = "PC2 - 7.9%"
+    ) +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10), size = 14),
+            axis.title.y = element_text(margin = margin(r = 10), size = 14),
+      legend.title = element_text(size = 14),
+      legend.text = element_text(size = 14)
+
+      
+    )
+    
+ggsave("pdf_outputs/Jacek_groups_PCA_lcwgs_data.png", width = 6, height = 4)
+```
+
+```{r add-group-info-to-pcas}
+pca_w_meta <- sample_ids %>%
+  bind_cols(., pca_df)
+
+no_jacek <- pca_w_meta %>%
+  filter(is.na(original_pop))
+
+jacek <- pca_w_meta %>%
+  filter(!is.na(original_pop))
+
+# plot without Jacek's samples
+no_jacek %>%
+  filter(pop_assign != "B") %>%
+  ggplot() +
+  geom_point(aes(x = PC1, y = PC2, color = pop_assign), size = 2, alpha = 0.5) +
+ # geom_point(data = jacek, aes(x = PC1, y = PC2, color = original_pop), size = 3.5, alpha = 0.7) +
+  theme_bw() +
+  scale_color_manual(values = c("darkcyan",
+                                "maroon",
+                                "goldenrod1",
+                                "deepskyblue",
+                                "dodgerblue3",
+                                "salmon",
+                                "darkblue"),
+                                na.value = "gray70") +
+    labs(
+      color = "lcWGS \ngenetic group",
+      x = "PC1 - 20.0%",
+      y = "PC2 - 7.9%"
+    ) +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10), size = 14),
+            axis.title.y = element_text(margin = margin(r = 10), size = 14),
+      legend.title = element_text(size = 14),
+      legend.text = element_text(size = 14)
+    ) + guides(color = guide_legend(override.aes = list(alpha = 1)))
+
+    
+ggsave("pdf_outputs/lcwgs_PCA_groups.png", width = 6, height = 4)
+```
+
+
+Now add color to the rest of the PCA samples
+
+```{r all-samples-color-coordinated}
+pca_w_meta %>%
+  mutate(grp = ifelse(PC1 < -0.04 & PC2 < -0.02 & PC2 > -0.05, NA, pop_assign)) %>%
+  #filter(!is.na(pop_assign)) %>%
+  mutate(grp = ifelse(str_detect(pop_assign, "B"), "B", grp)) %>%
+  ggplot() +
+  geom_point(aes(x = PC1, y = PC2, color = grp), size = 2, alpha = 0.5) +
+  theme_bw() +
+  scale_color_manual(values = c("darkcyan", 
+                                "deepskyblue", 
+                                "salmon", 
+                                "darkblue"),
+                     na.value = "gray70") +
+    labs(
+      color = "lcWGS \ngenetic group",
+      x = "PC1 - 20.0%",
+      y = "PC2 - 7.9%"
+    ) +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10), size = 14),
+            axis.title.y = element_text(margin = margin(r = 10), size = 14),
+      legend.title = element_text(size = 14),
+      legend.text = element_text(size = 14)
+    ) + guides(color = guide_legend(override.aes = list(alpha = 1)))
+
+ggsave("pdf_outputs/lcwgs_data_wes_groups.png", width = 6, height = 4)
+```
+It's unclear how some of those were assigned groups based on this data. Instead, let's color the unambiguous samples and leave some gray.
+
+What about PC 3??
+
+```{r}
+pca_w_meta %>%
+  filter(!is.na(pop_assign)) %>%
+  mutate(pop_assign = ifelse(str_detect(pop_assign, "B"), "B", pop_assign)) %>%
+  filter(pop_assign != "B") %>%
+  ggplot() +
+  geom_point(aes(x = PC2, y = PC3, color = pop_assign), size = 2, alpha = 0.5) +
+  theme_bw() +
+  scale_color_manual(values = c("darkcyan", 
+                                #"deepskyblue", 
+                                "salmon", 
+                                "darkblue")) +
+    labs(
+      color = "lcWGS \ngenetic group",
+      x = "PC2 - 7.9%",
+      y = "PC3 - %"
+    ) +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10), size = 14),
+            axis.title.y = element_text(margin = margin(r = 10), size = 14),
+      legend.title = element_text(size = 14),
+      legend.text = element_text(size = 14)
+    ) + guides(color = guide_legend(override.aes = list(alpha = 1)))
+
+
+
+```
+
+
+
+
+```{r plot-w-all-lcwgs-sample-groups}
+# What about color based on location information?
+# since our hypothesis was structure based on location
+
+df_w_locs <- pca_w_meta %>%
+  filter(!is.na(pop_assign) &
+           is.na(original_pop)) %>%
+  mutate(Population = ifelse(Population == "Southeast Bering Sea", "SE Bering Sea", Population)) %>%
+    mutate(Population = ifelse(Population == "cGOA", "Central GOA", Population)) %>%
+      mutate(Population = ifelse(Population == "eGOA", "Eastern GOA", Population)) %>%
+      mutate(Population = ifelse(Population == "wGOA", "Western GOA", Population))
+  
+df_w_locs$Population <- factor(df_w_locs$Population, levels = c("Aleutian Islands", "Central Bering Sea", "SE Bering Sea", "Western GOA", "Central GOA", "Eastern GOA", "SEAK", "South"))
+  
+loc_plot1 <- df_w_locs %>%  
+  mutate(pop_assign = ifelse(str_detect(pop_assign, "B"), "B", pop_assign)) %>%
+  ggplot() +
+  geom_point(aes(x = PC1, y = PC2, color = Population), size = 1, alpha = 0.6) +
+  theme_bw() +
+  # scale_color_manual(values = c("darkcyan", 
+  #                               #"deepskyblue", 
+  #                               "salmon", 
+  #                               "darkblue")) +
+    labs(
+      color = "Sampling location",
+      x = "PC1 - 20.0%",
+      y = "PC2 - 7.9%%"
+    ) +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10), size = 14),
+            axis.title.y = element_text(margin = margin(r = 10), size = 14),
+      legend.position = "none"
+      #legend.title = element_text(size = 14),
+      #legend.text = element_text(size = 12)
+    ) #+ guides(color = guide_legend(override.aes = list(alpha = 1)))
+
+
+loc_plot1
+
+ggsave("pdf_outputs/lcwgs_sampling_locations.png", width = 6, height = 4)
+
+```
+What's the geographic difference between Eastern GOA and SE AK?
+
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+goa_map <- ggplot(data = world) +
+  geom_sf() +
+  coord_sf(xlim = c(-179, -120), 
+           ylim = c(62, 35), 
+           expand = FALSE) +
+  theme_bw()
+
+loc_plot2 <- goa_map +
+  geom_point(data = df_w_locs, aes(x = StartLongitudeDD, y = StartLatitudeDD, color = Population)) +
+  labs(
+      color = "Sampling location",
+      x = "Longitude",
+      y = "Latitude"
+    ) +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10), size = 14),
+            axis.title.y = element_text(margin = margin(r = 10), size = 14),
+      legend.title = element_text(size = 14),
+      legend.text = element_text(size = 12)
+    ) +
+  scale_x_continuous(breaks = c(-170, -150, -130)) +
+  scale_y_continuous(breaks = c(35, 45, 55))
+  
+loc_plot2
+
+
+goa_map +
+  geom_point(data = df_w_locs, aes(x = StartLongitudeDD, y = StartLatitudeDD, color = Population)) +
+  labs(
+      color = "Sampling location",
+      x = "",
+      y = ""
+    ) +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10), size = 14),
+            axis.title.y = element_text(margin = margin(r = 10), size = 14),
+      legend.title = element_text(size = 14),
+      legend.text = element_text(size = 12)
+    ) +
+  scale_x_continuous(breaks = c(-170, -150, -130)) +
+  scale_y_continuous(breaks = c(35, 45, 55))
+
+ggsave("pdf_outputs/lcwgs_sampling_locations.png", width = 6, height = 4)
+```
+
+```{r}
+library(patchwork)
+
+loc_plot1 + loc_plot2 + plot_layout(guides = "collect")
+
+ggsave("pdf_outputs/lcwgs_sampling_locations_pca.png", width = 10, height = 8)
+```
+
+
+
+Plot genetic groups (rather than sampling locations) on map
+
+```{r genetic-assignments-lcWGS}
+tmp <- df_w_locs %>%
+  filter(pop_assign != "B")
+
+goa_map +
+  geom_point(data = tmp, aes(x = StartLongitudeDD, y = StartLatitudeDD, color = pop_assign), size = 2) +
+  facet_wrap(~pop_assign) +
+  theme_minimal() +
+  labs(
+      color = "Genetic group",
+      x = "",
+      y = ""
+    ) +
+    theme(
+      axis.title.x = element_text(margin = margin(t = 10), size = 14),
+            axis.title.y = element_text(margin = margin(r = 10), size = 14),
+      # legend.title = element_text(size = 14),
+      # legend.text = element_text(size = 12),
+      strip.text = element_text(size = 12),
+      legend.position = "none"
+    ) +
+  scale_x_continuous(breaks = c(-170, -150, -130)) +
+  scale_y_continuous(breaks = c(35, 45, 55)) +
+  scale_color_manual(values = c("darkcyan",
+                                "maroon",
+                                "goldenrod1",
+                                "deepskyblue",
+                                "dodgerblue3",
+                                "salmon",
+                                "darkblue"),
+                                na.value = "gray70")
+
+ggsave("pdf_outputs/lcwgs_pop_assign_map_grid.png", width = 7, height = 6)
+```
+

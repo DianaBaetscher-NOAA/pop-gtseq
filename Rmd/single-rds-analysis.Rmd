@@ -1,0 +1,331 @@
+---
+title: "single-rds-analysis"
+author: "diana baetscher"
+date: "2024-01-20"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# suppress R warnings for packages
+defaultW <- getOption("warn")
+options(warn = -1)
+```
+
+
+Walkthrough of species id for unknown samples:
+
+Using the rds file output from microhaplot:
+1. read in rds files
+2. apply read depth filters
+3. apply allele balance filter
+
+
+```{r install-packages-and-load-functions}
+library(tidyverse)
+library(readxl)
+library(stringr)
+library(lubridate)
+library(rubias)
+library(ggpattern)
+# for mapping
+library(ggplot2)
+library(sf)  
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+
+
+source("../R/microhaplot-genos-funcs.R")
+
+#### Call genos from the microhaplot rds files ####
+
+# the directory with the rds file
+dir <- "../data/rds_files/"
+
+
+# cycle over them, read them and add the gtseq_run column on each.
+# at the end, bind them together.
+genos_long <- call_genos_from_haplotRDS(path = file.path(dir, "POP_gtseq_20240118.rds"))
+
+#### In the end, let us get a data frame that includes genotypes for all the individuals  ####
+# and which explicitly has NAs in places where data are missing
+genos_long_explicit_NAs <- genos_long %>%
+  select(id) %>%
+  unique() %>%
+  unlist() %>%
+  unname() %>%
+  expand.grid(id = ., locus = unique(genos_long$locus), gene_copy = 1:2, stringsAsFactors = FALSE) %>%
+  tbl_df() %>% 
+  left_join(., genos_long) %>%
+  arrange(id, locus, gene_copy)
+
+  
+```
+
+
+Using those genotypes...
+```{r how-many-samples-and-alleles}
+genos_long_explicit_NAs %>%
+  group_by(id) %>%
+  tally() %>%
+  mutate(missing_data_threshold = n*.2)
+
+```
+
+
+
+Look at missing data:
+
+```{r}
+ind_to_toss <- genos_long_explicit_NAs %>%
+  group_by(id) %>%
+  filter(is.na(allele)) %>% # missing data
+  tally() %>%
+  arrange(desc(n)) %>% # remove samples with >20% missing data
+  filter(n > 67) 
+
+# remove those from the df
+genos_ind_filtered <- genos_long_explicit_NAs %>%
+  anti_join(., ind_to_toss)
+  
+```
+Just 5 samples drop out because of missing data.
+
+## Read in baseline data for GSI
+
+Load baseline data
+```{r baseline-data}
+# baseline data - ascertainment samples from lcWGS
+baseline <- readRDS("../data/processed/gsi_baseline_genotypes.rds") %>%
+  rename(collection = pop_assign)
+
+# remind myself which species are in the baseline:
+baseline %>%
+  select(collection) %>%
+  unique() %>%
+  arrange()
+
+# for this analysis, we'll group the B groups together
+baseline_four_grps <- baseline %>%
+  mutate(repunit = ifelse(str_detect(collection, "B"), "B", collection)) %>%
+  mutate(sample_type = "reference") %>%
+  rename(indiv = ABLG) %>%
+  select(sample_type, repunit, collection, indiv, gtseq_run, id, locus, gene_copy, allele, depth) %>%
+  unique() %>%
+  mutate(id = indiv)
+baseline_four_grps$gtseq_run <- as.character(baseline_four_grps$gtseq_run)
+baseline_four_grps$id <- as.character(baseline_four_grps$id)
+
+# just the ids
+baseline_ids <- baseline_four_grps %>%
+  select(-locus, -allele, -gene_copy, -depth) %>%
+  unique()
+
+baseline_ids
+```
+### Worth checking on the allele balance again...
+
+
+```{r baseline-format}
+# slim that down to just the matching field with the unknowns
+for_alleidx <- baseline_four_grps %>%
+  select(-c(1:5))
+  
+for_alleidx
+```
+
+
+
+```{r make-alleles-integers}
+# before joining the dataframes, make sure the loci are consistent
+for_alleidx$id <- as.character(for_alleidx$id)
+
+# which loci are in the baseline:
+locs_to_keep <- baseline_four_grps %>%
+  select(locus) %>%
+  unique()
+
+# just keep the loci that are in the baseline (for now)
+genos_locs_to_keep <- genos_ind_filtered %>%
+  inner_join(., locs_to_keep)
+
+
+# merge the two dataframes
+merged_df <- bind_rows(for_alleidx, genos_locs_to_keep)
+
+# first make integers of the alleles
+# it's important the the baseline and unknowns are in the same dataframe for this step.
+alle_idxs <- merged_df %>% 
+  dplyr::select(id, locus, gene_copy, allele) %>%
+  group_by(locus) %>%
+  mutate(alleidx = as.integer(factor(allele, levels = unique(allele)))) %>%
+  ungroup() %>%
+  arrange(id, locus, alleidx) # rubias can handle NA's, so no need to change them to 0's
+  
+# and spread the alleles
+two_col <- alle_idxs %>%
+  #group_by(indiv, locus) %>%
+  unite(loc, locus, gene_copy, sep = ".") %>%
+  #ungroup() %>%
+  select(-allele) %>%
+  pivot_wider(names_from = loc, values_from = alleidx) 
+```
+
+
+
+```{r deal-w-missing-loci}
+# remove three loci with no data in either baseline or unknowns
+# two_col <- two_col %>%
+#   select(-CM025826.1_31868994.1, -CM025844.1_8334031.1, -CM025845.1_2064232.1)
+```
+
+
+add back on info for reference and make two-column format for rubias
+
+```{r make-baseline-df-for-rubias}
+# baseline
+reference <- two_col %>%
+  inner_join(., baseline_ids) %>% # just the baseline genotypes in the allele idx dataframe
+  filter(!is.na(collection)) %>%
+  select(-gtseq_run, -id) %>%
+  select(sample_type, repunit, collection, indiv, everything())
+
+reference$indiv <- as.character(reference$indiv)
+
+```
+
+```{r make-mixture-df-for-rubias}
+# mixture
+rubias_mix <- two_col %>%
+  anti_join(., baseline_ids) %>% # remove the baseline samples from the allele idx df
+  #select(-gtseq_run) %>%
+  mutate(sample_type = "mixture", collection = "spp_id", repunit = NA) %>%
+  select(sample_type, repunit, collection, everything()) %>%
+  rename(indiv = id)
+
+rubias_mix
+```
+
+
+## Mixture assignment with rubias
+
+
+```{r run-rubias}
+rubias_output <- infer_mixture(reference = reference, mixture = rubias_mix, gen_start_col = 5)
+
+# we know there are species sequenced that aren't currently in the baseline.
+# those should come out in the z-scores
+```
+Double check that this locus was added to the primer pool?
+CM025835.1_371206.1
+
+
+
+```{r individual-posteriors}
+# take the top output for each sample
+top_assign <- rubias_output$indiv_posteriors %>%
+  group_by(indiv) %>%
+  slice_max(., order_by = PofZ)
+
+
+top_assign %>%
+  group_by(repunit) %>%
+  tally()
+
+```
+
+```{r look-at-z-score-distributions}
+top_assign %>%
+  ggplot(aes(x = z_score)) +
+  geom_histogram() +
+  facet_grid(rows = vars(collection))
+
+
+```
+There's some funkiness in the B groups, specifically B1. That handful of samples are out past -20, suggesting they're not from any of our baseline groups.
+
+```{r}
+top_assign %>%
+  filter(PofZ < 0.9)
+```
+Huh, there are some samples that are not confident assignments. 
+
+Let's re-run the baseline with just the four groups rather than splitting out B1-4.
+
+
+```{r rubias-with-one-b-group}
+reference4 <- reference %>%
+  mutate(collection = ifelse(repunit == "B", "B", collection))
+
+# run rubias
+rubias_output4 <- infer_mixture(reference = reference4, mixture = rubias_mix, gen_start_col = 5)
+
+# take the top output for each sample
+top_assign4 <- rubias_output4$indiv_posteriors %>%
+  group_by(indiv) %>%
+  slice_max(., order_by = PofZ)
+
+top_assign4 %>%
+  filter(PofZ < 0.9)
+# those iffy assignments go away.
+
+# what about z-scores
+top_assign4 %>%
+  ggplot(aes(x = z_score)) +
+  geom_histogram() +
+  facet_grid(rows = vars(repunit))
+
+```
+Interesting! Still some oddballs out at -30.
+Seems like those will need to be removed, either way.
+
+Which samples?
+```{r z-score-outliers}
+top_assign4 %>%
+  filter(z_score < -3)
+
+```
+```{r z-score-outliers-from-B1-grp}
+# are they the same samples from B1 in the prior rubias collection analysis?
+top_assign %>%
+  filter(z_score < -10)
+
+```
+Yes. Great. That makes it clear that, although we're not sure what to make of them, it's only that 10 that aren't falling in line.
+
+
+
+
+## Matching metadata
+
+Bring in metadata with ABLG numbers to match up with MiSeq sample ids
+
+The samplesheet is actually in the rockfish species id directory, but I'll copy it over for completeness.
+```{r samplesheet-ids}
+
+sample_sheet <- read_csv("../data/samplesheets/20240118_ChumBY23_POP_rockID.csv", skip = 19) %>%
+  mutate(sid = row_number())
+
+# convert the row numbers to characters
+sample_sheet$sid <- as.character(sample_sheet$sid)
+
+# make a new id column in the rubias output
+# and join that to the s_id in the samplesheet (which is based on physical location in the SS)
+assign_results4 <- top_assign4 %>%
+  mutate(sid = str_remove(indiv, "s")) %>%
+  left_join(., sample_sheet) %>%
+  select(Sample_ID, indiv, repunit, collection, PofZ, log_likelihood, z_score, n_non_miss_loci, n_miss_loci)
+
+```
+
+```{r assignment-results-for-morphology}
+assign_results4 %>%
+  filter(z_score > -3) %>%
+  write_csv("csv_outputs/POP_genetic_form_ids_20240121.csv")
+
+```
+
+
+

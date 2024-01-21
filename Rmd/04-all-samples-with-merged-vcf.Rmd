@@ -359,10 +359,25 @@ locs_to_toss <- genos_no_monomorphic %>%
 genos_locs_filtered <- genos_no_monomorphic %>%
   anti_join(., locs_to_toss)
 
+loc136_list <- genos_locs_filtered %>%
+  select(locus) %>%
+  unique()
 ```
 26 loci with >50% missing data***
 
 ***at some point, it would be interesting to return to this if the B4 population has higher rates of missing data (because of divergence).
+
+
+```{r quick-check-of-primer-pool}
+pool <- read_tsv("../data/20230130POP_GTseq3_JanusFile.txt")
+
+poola <- pool %>%
+  mutate(Locus = str_replace(Locus, "_F", "")) %>%
+  mutate(Locus = str_replace(Locus, "pop-gtseq_", ""))
+
+loc136_list %>%
+  anti_join(., poola, by = c("locus" = "Locus"))
+```
 
 
 The patterns of missing data across loci are generally weird. Maybe more indicative of species-specific patterns?
@@ -1421,6 +1436,17 @@ mix_grps_for_pca <- long_df_w_grps %>%
 
 ```
 
+### output baseline genotypes for GSI
+
+```{r extract-baseline-genotypes-for-GSI}
+clean_ascertain_ids$ABLG <- as.numeric(clean_ascertain_ids$ABLG)
+baseline_genos <- genos_locs_ind_filtered %>%
+  inner_join(., clean_ascertain_ids)
+
+baseline_genos %>%
+  write_rds("../data/processed/gsi_baseline_genotypes.rds")
+```
+
 
 
 # Rubias and GSI 
@@ -1452,6 +1478,7 @@ ref_two_col <- reference %>%
   mutate(repunit = collection) %>%
   mutate(sample_type = "reference") %>%
   select(sample_type, repunit, collection, everything())
+
 ```
 
 
@@ -1861,7 +1888,7 @@ mix_assign_w_meta %>%
 
 
 ```{r haul-proportions}
-bt_meta <- read_csv("../data/HAUL_DATA.csv")
+bt_meta <- read_csv("../data/HAUL_DATA.csv") 
 
 hauls <- mix_assign_w_meta %>%
   left_join(., POP_meta_ss) %>%
@@ -1873,14 +1900,15 @@ hauls <- mix_assign_w_meta %>%
   group_by(HaulID, StationID, SampleDate, StartLatitudeDD, StartLongitudeDD) %>%
   rowid_to_column("haul") %>%
   left_join(., mix_assign_w_meta) %>%
-  left_join(., bt_meta, by = c("CollectionYear" = "Year", "CruiseID" = "Cruise", "HaulID" = "Haul", "StationID" = "Station")) #%>%
+  left_join(., bt_meta, by = c("CollectionYear" = "Year", "CruiseID" = "Cruise", "HaulID" = "Haul", "StationID" = "Station")) %>%
+  mutate(StartLongitudeDD = ifelse(StartLongitudeDD > 0, StartLongitudeDD*-1, StartLongitudeDD))
   # mutate(location = ifelse(StartLatitudeDD < 50), "south", NA) %>%
   # mutate(location = ifelse(StartLatitudeDD >))
   
 hauls$HaulID <- as.character(hauls$HaulID)
 hauls %>%
   filter(!is.na(HaulID)) %>%
-   mutate(StartLongitudeDD = ifelse(StartLongitudeDD > 0, StartLongitudeDD*-1, StartLongitudeDD)) %>%
+  mutate(StartLongitudeDD = ifelse(StartLongitudeDD > 0, StartLongitudeDD*-1, StartLongitudeDD)) %>%
   filter(!StartLongitudeDD == 0) %>%
   ggplot(aes(x = reorder(HaulID, StartLongitudeDD), fill = collection)) +
   geom_bar(stat = "count") +
@@ -1924,6 +1952,7 @@ for_plotting <- hauls %>%
 for_plotting$haul <- as.character(for_plotting$haul)
 
 for_plotting$haul <- as.factor(for_plotting$haul)
+
 ```
 
 
@@ -1948,6 +1977,20 @@ hauls %>%
   arrange(CollectionYear)
 ```
 Even if I can't get individual length data for every fish, I could get length data per haul and then look at the hauls that are >90% one form...
+
+Relationship between haul size and longitude?
+```{r haul-size-vs-longitude}
+hauls %>%
+  group_by(haul, collection, StartLongitudeDD) %>%
+  tally(name = "n_form") %>%
+  group_by(haul) %>%
+  mutate(haul_size = sum(n_form)) %>%
+  ungroup() %>% 
+  ggplot(aes(x = StartLongitudeDD, y = haul_size)) +
+  geom_point() +
+  theme_bw() 
+
+```
 
 
 
@@ -1996,7 +2039,23 @@ ggsave("pdf_outputs/haul_proportions.pdf", width = 12, height = 7)
 
 ```
 
-```{r}
+Testing:
+```{r fix-pies-propotions}
+ggplot() + geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.5),
+                   data = for_plotting, cols = colnames(for_plotting[, c(6:9)]), alpha = 0.5) +
+  scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
+  coord_equal()
+
+
+
+for_plotting %>%
+  filter(StartLongitudeDD > 0)
+
+
+```
+
+
+```{r western-goa}
 wgoa_west <- ggplot(data = world) +
   geom_sf() +
   coord_sf(xlim = c(-179, -140), 
@@ -2006,7 +2065,7 @@ wgoa_west <- ggplot(data = world) +
 
 wgoa_west +
   geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.5),
-                   data = for_plotting, cols = colnames(for_plotting[, c(5:8)]), alpha = 0.5) +
+                   data = for_plotting, cols = colnames(for_plotting[, c(6:9)]), alpha = 0.5) +
   scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
 theme(
   axis.text = element_text(size = 8),
@@ -2050,24 +2109,24 @@ ggsave("pdf_outputs/pop_proportions_by_haul_kodiak.pdf", width = 8, height = 6)
 ### Depth by longitude
 
 ```{r analyzing-depth-by-longitude}
-mix_assign_w_meta %>%
-  mutate(StartLongitudeDD = ifelse(StartLongitudeDD > 0, StartLongitudeDD*-1, StartLongitudeDD)) %>%
-  filter(!StartLongitudeDD == 0,
-         DepthM != 0) %>%
-  ggplot(aes(x = StartLongitudeDD, y = DepthM, color = collection)) +
-  geom_jitter(size = 1, alpha = 0.4, width = 1.5, height = 10) +
-  scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue")) +
-  theme_bw() +
-  labs(
-    x = "Longitude W",
-    y = "Depth (m)",
-    color = "genetic \n group",
-    title = "Genetic group by longitude and depth"
-  ) + annotate("text", x = -178, y = 390, label = "deep") +
-  annotate("segment", x = -178, xend = -178, y = 350, yend = 378, color = "black", arrow = arrow(length = unit(0.2, "cm"))) +
-  guides(colour = guide_legend(override.aes = list(alpha = 1)))
+# mix_assign_w_meta %>%
+#   mutate(StartLongitudeDD = ifelse(StartLongitudeDD > 0, StartLongitudeDD*-1, StartLongitudeDD)) %>%
+#   filter(!StartLongitudeDD == 0,
+#          DepthM != 0) %>%
+#   ggplot(aes(x = StartLongitudeDD, y = DepthM, color = collection)) +
+#   geom_jitter(size = 1, alpha = 0.4, width = 1.5, height = 10) +
+#   scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue")) +
+#   theme_bw() +
+#   labs(
+#     x = "Longitude W",
+#     y = "Depth (m)",
+#     color = "genetic \n group",
+#     title = "Genetic group by longitude and depth"
+#   ) + annotate("text", x = -178, y = 390, label = "deep") +
+#   annotate("segment", x = -178, xend = -178, y = 350, yend = 378, color = "black", arrow = arrow(length = unit(0.2, "cm"))) +
+#   guides(colour = guide_legend(override.aes = list(alpha = 1)))
 
-ggsave("pdf_outputs/genetic_group_ind_longitude_depth.pdf", width = 8, height = 6)
+#ggsave("pdf_outputs/genetic_group_ind_longitude_depth.pdf", width = 8, height = 6)
 ```
 
 ```{r with-pies}
@@ -2078,7 +2137,7 @@ plot_pie_data <- for_plotting %>%
 
 ggplot() +
   geom_scatterpie(aes(x = StartLongitudeDD,y = DepthM/-10, r = 1),
-                   data = plot_pie_data, cols = colnames(for_plotting[, c(5:8)]), alpha = 0.6) +
+                   data = plot_pie_data, cols = colnames(for_plotting[, c(6:9)]), alpha = 0.6) +
   scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
   labs(title = "Haul proportions by genetic group, depth, longitude", 
        x = "Longitude", 
@@ -2099,6 +2158,11 @@ ggplot() +
 
 ggsave("pdf_outputs/trawl_proportions_longitude_depth.pdf", width = 7, height = 5)
 ```
+
+
+
+
+
 
 
 
