@@ -13,6 +13,11 @@ The data included here consists of 7 MiSeq runs, for which samples were re-numbe
 UPDATE: the all_pop.vcf file was missing variants from some of the individual MiSeq runs and so I remade the merged VCF file. The new version is called "pop02_03_04_05_06_merged.vcf."
 
 
+TO DO:
+- Still need to clean-up metadata more.
+- Need to do a matching genotype analysis to determine if samples with different ABLG numbers are actually the same sample.
+
+
 We need to test the baseline for assignment using these haplotypes and then 
 
 
@@ -742,6 +747,7 @@ goa_map +
 ggsave("pdf_outputs/POP_baseline_group_distribution_panels.pdf", width = 10, height = 7)
 ```
 
+
 Some notes:
 B4 appears exclusively SE of Yakutat, and is the only group found in the lower 48 with the exception of one B2 sample in Northern CA.
 B1 is distributed throughout the central GOA.
@@ -1453,7 +1459,7 @@ baseline_genos %>%
 
 
 ```{r baseline-samples-for-rubias}
-alle_idxs$ABLG <- as.character(alle_idxs$ABLG)
+#alle_idxs$ABLG <- as.character(alle_idxs$ABLG)
 # beginning with the alleles for the full dataset
 # format for rubias
 reference <- alle_idxs %>%
@@ -1479,6 +1485,7 @@ ref_two_col <- reference %>%
   mutate(sample_type = "reference") %>%
   select(sample_type, repunit, collection, everything())
 
+ref_two_col$indiv <- as.character(ref_two_col$indiv)
 ```
 
 
@@ -1571,6 +1578,7 @@ mix_two_col <- mix_idx %>%
   select(sample_type, repunit, collection, everything()) %>%
   ungroup()
 
+mix_two_col$indiv <- as.character(mix_two_col$indiv)
 # formatting for compatibility
 tmp_combo <- bind_rows(ref_two_col, mix_two_col)
 
@@ -1856,7 +1864,8 @@ p1 <- mix_assign_w_meta %>%
        title = "Sebastes alutus, collection depth by genetic group (rubias assignments)") +
   theme(
     axis.title.x = element_text(margin = margin(t = 10)),
-    axis.title.y = element_text(margin = margin(r = 10))
+    axis.title.y = element_text(margin = margin(r = 10)),
+    legend.position = "none"
   ) +
     scale_color_manual(values = c("darkcyan", "deepskyblue", "salmon", "darkblue", "sienna", "slateblue", "firebrick", "darkorange"))
 
@@ -1864,7 +1873,7 @@ p1 <- mix_assign_w_meta %>%
 p1 + geom_boxplot(width=0.1, color = "black") +
   geom_jitter(shape=16, position=position_jitter(0.1), alpha = 0.6)
 
-ggsave("pdf_outputs/pop_grp_depth_dist_rubias_assignments.pdf")
+ggsave("pdf_outputs/pop_grp_depth_dist_rubias_assignments.png", width = 7, height = 5)
 
 ```
 Average depths for A vs. D?
@@ -1884,26 +1893,52 @@ mix_assign_w_meta %>%
 
 
 ### Mixtures by haul
-
-
-
-```{r haul-proportions}
-bt_meta <- read_csv("../data/HAUL_DATA.csv") 
-
-hauls <- mix_assign_w_meta %>%
+```{r duplicated-metadata?}
+mix_assign_w_meta %>%
   left_join(., POP_meta_ss) %>%
-  group_by(HaulID, StationID, StartLatitudeDD, StartLongitudeDD, DonatingLab, CollectionYear, CollectionMonth, CollectionDay) %>%
+  group_by(HaulID, StationID, StartLatitudeDD, StartLongitudeDD, DonatingLab, CollectionYear, CollectionMonth, CollectionDay, DepthM) %>%
   tally() %>%
   arrange(n) %>%
   filter(n > 10) %>%
   unite(CollectionYear, CollectionMonth, CollectionDay, col = "SampleDate", sep = "_", remove = F) %>%
   group_by(HaulID, StationID, SampleDate, StartLatitudeDD, StartLongitudeDD) %>%
-  rowid_to_column("haul") %>%
-  left_join(., mix_assign_w_meta) %>%
-  left_join(., bt_meta, by = c("CollectionYear" = "Year", "CruiseID" = "Cruise", "HaulID" = "Haul", "StationID" = "Station")) %>%
+  filter(CollectionYear == "1999") %>%
   mutate(StartLongitudeDD = ifelse(StartLongitudeDD > 0, StartLongitudeDD*-1, StartLongitudeDD))
+# damn, looks like the Longitude sign is flipped in one entry and that's causing the data duplication.
+
+# Still need to perfect the metadata for this project once Juliana has sorted through all the issues.
+```
+
+
+```{r fix-metadata-issues-in-the-assignment-output}
+assignments_meta_fixed <- mix_assign_w_meta %>%
+  mutate(DepthM = ifelse(DepthM == 0, NA, DepthM)) %>%
+  mutate(StartLongitudeDD = ifelse(StartLongitudeDD > 0, StartLongitudeDD*-1, StartLongitudeDD)) %>%
+  mutate(StartLongitudeDD = ifelse(StartLongitudeDD == 0, NA, StartLongitudeDD)) %>%
+    mutate(StartLatitudeDD = ifelse(StartLatitudeDD == 0, NA, StartLatitudeDD))
+```
+
+
+```{r haul-proportions}
+bt_meta <- read_csv("../data/HAUL_DATA.csv") 
+
+hauls <- assignments_meta_fixed %>%
+  left_join(., POP_meta_ss) %>%
+  mutate(StartLongitudeDD = ifelse(StartLongitudeDD > 0, StartLongitudeDD*-1, StartLongitudeDD)) %>%
+  mutate(DepthM = ifelse(DepthM == 0, NA, DepthM)) %>%
+  group_by(HaulID, StationID, StartLatitudeDD, StartLongitudeDD, DonatingLab, CollectionYear, CollectionMonth, CollectionDay, DepthM) %>%
+  tally() %>%
+  arrange(CollectionYear) %>%
+  filter(n > 10) %>%
+  unite(CollectionYear, CollectionMonth, CollectionDay, col = "SampleDate", sep = "_", remove = F) %>%
+  group_by(HaulID, StationID, SampleDate, StartLatitudeDD, StartLongitudeDD) %>%
+  rowid_to_column("haul") %>%
+  left_join(., assignments_meta_fixed) %>%
+  left_join(., bt_meta, by = c("CollectionYear" = "Year", "CruiseID" = "Cruise", "HaulID" = "Haul", "StationID" = "Station")) 
   # mutate(location = ifelse(StartLatitudeDD < 50), "south", NA) %>%
   # mutate(location = ifelse(StartLatitudeDD >))
+
+
   
 hauls$HaulID <- as.character(hauls$HaulID)
 hauls %>%
@@ -1918,23 +1953,27 @@ hauls %>%
     axis.text = element_text(size = 8),
     axis.title.x = element_text(margin = margin(t = 10)),
     axis.title.y = element_text(margin = margin(r = 10)),
-    axis.text.x = element_text(angle = 45)
+    #axis.text.x = element_text(angle = 90, hjust = 0.95, vjust = 0.5)
+    axis.text.x = element_blank()
   ) +
   labs(
     fill = "genetic \n group",
     x = "Haul (ordered by west-to-east by longitude)",
     y = "Number of samples in haul",
     title = "Number of POP per genetic group per haul"
-  )
+  ) +
+  scale_y_continuous(expand = c(0,0))
 
-ggsave("pdf_outputs/POP_genetic_group_count_by_haul.pdf", width = 8, height = 6)
+ggsave("pdf_outputs/POP_genetic_group_count_by_haul.pdf", width = 6, height = 4)
+
 ```
 
 
 ```{r scatterpie-map}
 library(scatterpie)
 
-for_plotting <- hauls %>%
+# ensure that each haul is only entered once.
+tmp_pie <- hauls %>%
   ungroup() %>%
   select(haul, indiv, StartLatitudeDD, StartLongitudeDD, collection, DepthM, CollectionYear) %>%
   group_by(haul) %>%
@@ -1944,7 +1983,11 @@ for_plotting <- hauls %>%
   select(-indiv) %>% # summarise over hauls
   unique() %>%
   mutate(grp_prop = n_grp_haul/n_haul) %>%
-  select(-n_haul, -n_grp_haul) %>%
+  select(-n_haul, -n_grp_haul)
+
+tmp_pie$collection <- factor(tmp_pie$collection, levels = c("A", "B", "C", "D"))
+
+for_plotting <- tmp_pie %>%
   pivot_wider(names_from = collection, values_from = grp_prop) %>%
   group_by(haul) %>%
   replace(is.na(.), 0)
@@ -1952,7 +1995,6 @@ for_plotting <- hauls %>%
 for_plotting$haul <- as.character(for_plotting$haul)
 
 for_plotting$haul <- as.factor(for_plotting$haul)
-
 ```
 
 
@@ -1990,6 +2032,7 @@ hauls %>%
   geom_point() +
   theme_bw() 
 
+
 ```
 
 
@@ -2022,8 +2065,8 @@ goa_map_zoom <- ggplot(data = world) +
 
 goa_map_zoom +
   geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.5),
-                   data = for_plotting, cols = colnames(for_plotting[, c(6:9)]), alpha = 0.5) +
-scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
+                   data = for_plotting, cols = colnames(for_plotting[, c(6:9)]), alpha = 0.6) +
+scale_fill_manual(values = c( "darkcyan","deepskyblue", "darkblue", "salmon")) +
   #facet_wrap(~CollectionYear) +
   theme(
   axis.text = element_text(size = 8),
@@ -2034,25 +2077,52 @@ scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
   labs(title = "Bottom trawl proportions by genetic group", x = "Longitude", y = "Latitude",
        fill = "genetic \n group") 
 
-ggsave("pdf_outputs/haul_proportions.pdf", width = 12, height = 7)
-
-
 ```
 
-Testing:
+Making the scatterpies round!
 ```{r fix-pies-propotions}
-ggplot() + geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.5),
-                   data = for_plotting, cols = colnames(for_plotting[, c(6:9)]), alpha = 0.5) +
-  scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
-  coord_equal()
+library(ggthemes)
 
+world_map = map_data("world") %>% 
+  filter(! long > 180)
 
+countries = world_map %>% 
+  distinct(region) %>% 
+  rowid_to_column()
 
+testp1 <- countries %>% 
+  ggplot(aes(map_id = region)) +
+  geom_map(map = world_map, fill = "gray") +
+  coord_equal() +
+  theme_bw() +
+  scale_x_continuous(limits = c(-182, -125), breaks = c(-180, -160, -140), labels = c("180°W", "160°W", "140°W")) +
+  scale_y_continuous(limits = c(47, 65), breaks = c(50, 60), labels = c("50°N", "60°N")) +
+  labs(x = "",
+       y = "")
+
+testp1 +
+  geom_scatterpie(aes(x = StartLongitudeDD,y = StartLatitudeDD, r = 0.8),
+                   data = for_plotting, cols = colnames(for_plotting[, c(6:9)]), alpha = 0.75) +
+  scale_fill_manual(values = c("darkcyan","deepskyblue", "darkblue", "salmon")) +
+  coord_equal() +
+  labs(fill = "genetic \ngroup")
+
+ggsave("pdf_outputs/POP_bottomtrawl_haul_pies.pdf", width = 8, height = 3)
+```
+Although that works, the overplotting is pretty terrible.
+I can pull the PDF into Inkscape to fix the overplotting - apparently there's no easy mechanism to do so in R with jittering.
+
+```{r}
 for_plotting %>%
-  filter(StartLongitudeDD > 0)
-
+  filter(StartLongitudeDD < -160) %>%
+  filter(StartLongitudeDD > -170) %>%
+  filter(D < 0.5)
 
 ```
+hauls 8 and 13 have the exact sample lat/lon and collection year and only slightly different proportions. 
+Go up to the metadata to see if there is anything different about the Station numbers - especially since the depth data is missing.
+
+
 
 
 ```{r western-goa}
@@ -2076,7 +2146,7 @@ theme(
   labs(title = "Bottom trawl proportions by genetic group", x = "Longitude", y = "Latitude",
        fill = "genetic \n group")
 
-ggsave("pdf_outputs/pop_proportions_by_haul_west.pdf", width = 8, height = 6)
+#ggsave("pdf_outputs/pop_proportions_by_haul_west.pdf", width = 8, height = 6)
 ```
 
 If we think there's depth segregation, we should look at a bathymap.
@@ -2102,7 +2172,7 @@ scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
        fill = "genetic \n group") 
   
 
-ggsave("pdf_outputs/pop_proportions_by_haul_kodiak.pdf", width = 8, height = 6)
+#ggsave("pdf_outputs/pop_proportions_by_haul_kodiak.pdf", width = 8, height = 6)
 
 ```
 
@@ -2135,28 +2205,32 @@ plot_pie_data <- for_plotting %>%
   filter(!StartLongitudeDD == 0,
          DepthM != 0)
 
+plot_pie_data
+
 ggplot() +
   geom_scatterpie(aes(x = StartLongitudeDD,y = DepthM/-10, r = 1),
                    data = plot_pie_data, cols = colnames(for_plotting[, c(6:9)]), alpha = 0.6) +
-  scale_fill_manual(values = c("deepskyblue", "salmon", "darkblue", "darkcyan")) +
+  scale_fill_manual(values = c("darkcyan", "deepskyblue", "darkblue", "salmon" )) +
   labs(title = "Haul proportions by genetic group, depth, longitude", 
        x = "Longitude", 
-       y = "Bottom depth*10 (m)",
+       y = "Bottom depth (m)",
        fill = "genetic \n group") +
   theme_bw() +
   theme(
   axis.text = element_text(size = 8),
   axis.title.x = element_text(margin = margin(t = 10)),
   axis.title.y = element_text(margin = margin(r = 10)),
-  legend.title = element_text(size = 8)
+  legend.title = element_text(size = 10)
 ) +
-  annotate("text", x = -178, y = -37, label = "deep") +
-  annotate("segment", x = -178, xend = -178, y = -32, yend = -36, color = "black", arrow = arrow(length = unit(0.2, "cm"))) +
-  annotate("text", x = -174, y = -38, label = "west") +
-  annotate("segment", x = -165, xend = -172, y = -38, yend = -38, color = "black", arrow = arrow(length = unit(0.2, "cm")))
+  # annotate("text", x = -178, y = -37, label = "deeper", size = 5) +
+  # annotate("segment", x = -178, xend = -178, y = -32, yend = -36, color = "black", arrow = arrow(length = unit(0.2, "cm"))) +
+  # annotate("text", x = -172.5, y = -38, label = "west", size = 5) +
+  # annotate("segment", x = -165, xend = -170.5, y = -38, yend = -38, color = "black", arrow = arrow(length = unit(0.2, "cm"))) +
+  scale_x_continuous(breaks = c(-180, -160, -140), labels = c("180°W", "160°W", "140°W")) +
+  scale_y_continuous(breaks = c(-40, -30, -20, -10), labels = c("400", "300", "200", "100"))
 
 
-ggsave("pdf_outputs/trawl_proportions_longitude_depth.pdf", width = 7, height = 5)
+ggsave("pdf_outputs/trawl_proportions_longitude_depth.png", width = 6, height = 3.5)
 ```
 
 
@@ -2412,9 +2486,28 @@ haul_df_for_stats %>%
 
 ```
 
+### Looking at new metadata that Juliana organized
+
+```{r cleaned-up-metadata}
+# compare the new metadata with the previous version.
+new_meta <- read_xlsx("../data/POP_database_export_May2023_updated_Jan2024.xlsx", sheet = "Sheet1")
+
+# so many parsing errors. Ugh
+# what if I try reading it in as a .csv?
+
+
+
+
+```
+
+
+
+
+
 
 
 ## Other analyses
+
 
 
 

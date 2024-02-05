@@ -345,9 +345,11 @@ Plot genetic groups (rather than sampling locations) on map
 ```{r genetic-assignments-lcWGS}
 tmp <- df_w_locs %>%
   filter(pop_assign != "B")
+ā
+tmp$pop_assign <- factor(tmp$pop_assign, levels = c("A", "B1", "B2", "C", "B3", "B4", "D"))
 
 goa_map +
-  geom_point(data = tmp, aes(x = StartLongitudeDD, y = StartLatitudeDD, color = pop_assign), size = 2) +
+  geom_point(data = tmp, aes(x = StartLongitudeDD, y = StartLatitudeDD, color = pop_assign), size = 2.5, alpha = 0.8) +
   facet_wrap(~pop_assign) +
   theme_minimal() +
   labs(
@@ -360,7 +362,7 @@ goa_map +
             axis.title.y = element_text(margin = margin(r = 10), size = 14),
       # legend.title = element_text(size = 14),
       # legend.text = element_text(size = 12),
-      strip.text = element_text(size = 12),
+      strip.text = element_text(size = 14),
       legend.position = "none"
     ) +
   scale_x_continuous(breaks = c(-170, -150, -130)) +
@@ -368,9 +370,9 @@ goa_map +
   scale_color_manual(values = c("darkcyan",
                                 "maroon",
                                 "goldenrod1",
+                                "salmon",
                                 "deepskyblue",
                                 "dodgerblue3",
-                                "salmon",
                                 "darkblue"),
                                 na.value = "gray70")
 

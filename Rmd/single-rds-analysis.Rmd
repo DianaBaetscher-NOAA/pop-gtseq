@@ -13,6 +13,8 @@ defaultW <- getOption("warn")
 options(warn = -1)
 ```
 
+Plate 1: 66 bottom trawl POP + 16 HMW POP + 1 Wes random dusky+12 dark dusky to fill plate
+
 
 Walkthrough of species id for unknown samples:
 
@@ -244,13 +246,37 @@ top_assign %>%
 
 
 ```
-There's some funkiness in the B groups, specifically B1. That handful of samples are out past -20, suggesting they're not from any of our baseline groups.
+There's some funkiness in the B groups, specifically B1. That handful of samples are out past -20, suggesting they're not from any of our baseline groups. **talking to Wes - these are duskies that were included on the plate.
 
 ```{r}
 top_assign %>%
   filter(PofZ < 0.9)
 ```
 Huh, there are some samples that are not confident assignments. 
+
+```{r get-the-metadata-to-link-with-the-rubias-assignments}
+samplesheet <- read_csv("../../../git-repos/rockfish-species-id/data_AFSC/samplesheets/20240118_ChumBY23_POP_rockID.csv", skip = 19) %>%
+  mutate(s = "s") %>%
+  mutate(id = row_number()) %>%
+  unite("s_id", s:id, sep = "") %>%
+  select(-I7_Index_ID, -index, -I5_Index_ID, -index2, -Sample_Project)
+
+```
+
+```{r Output-results-with-B-groups-within-repunits}
+top_assign %>%
+  mutate(repunit = ifelse(z_score < -5, "light/dark dusky", repunit)) %>%
+  mutate(collection = ifelse(z_score < -5, "light/dark dusky", collection)) %>%
+  select(indiv, repunit, collection, PofZ, log_likelihood, z_score, n_non_miss_loci, n_miss_loci) %>%
+  left_join(., samplesheet, by = c("indiv" = "s_id")) %>%
+  select(Sample_ID, Sample_Plate, Sample_Well, everything()) %>%
+  rename(POP_group = repunit) %>%
+  write_csv("csv_outputs/POP_group_assignments_20240126.csv")
+  
+
+
+```
+
 
 Let's re-run the baseline with just the four groups rather than splitting out B1-4.
 
@@ -326,6 +352,5 @@ assign_results4 %>%
   write_csv("csv_outputs/POP_genetic_form_ids_20240121.csv")
 
 ```
-
 
 
